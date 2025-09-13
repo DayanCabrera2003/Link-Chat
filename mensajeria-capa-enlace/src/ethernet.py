@@ -2,6 +2,7 @@ import time
 import socket
 import struct
 import binascii
+import os
 
 ACK_TYPE = 0x9999
 BROADCAST_MAC = 'ff:ff:ff:ff:ff:ff'
@@ -11,7 +12,58 @@ BROADCAST_MAC = 'ff:ff:ff:ff:ff:ff'
 def mac_str_to_bytes(mac_str):
     return binascii.unhexlify(mac_str.replace(':', ''))
 
-def get_local_mac(interface='eth0'):
+def _list_candidate_interfaces():
+    """Return a list of non-loopback interfaces, preferring those that are up."""
+    candidates = []
+    try:
+        for name in os.listdir('/sys/class/net'):
+            if name == 'lo' or name.startswith('veth'):
+                continue
+            # Deprioritize docker bridges unless nothing else
+            if name.startswith('docker') or name.startswith('br-'):
+                candidates.append((name, False))
+                continue
+            # Check if interface is up
+            oper_path = f'/sys/class/net/{name}/operstate'
+            is_up = False
+            try:
+                with open(oper_path) as f:
+                    is_up = f.read().strip() == 'up'
+            except Exception:
+                pass
+            candidates.append((name, is_up))
+    except Exception:
+        pass
+    # Prefer interfaces that are up; keep original order otherwise
+    up = [n for n, up in candidates if up]
+    down = [n for n, up in candidates if not up]
+    return up + down
+
+def get_active_interface(default_hint: str | None = None) -> str | None:
+    """
+    Pick an active interface to use.
+    Priority:
+    - Env var LINKCHAT_IFACE
+    - Provided default_hint if exists
+    - First non-loopback interface that's up
+    - Any non-loopback interface
+    """
+    env_iface = os.environ.get('LINKCHAT_IFACE')
+    if env_iface:
+        return env_iface
+    if default_hint:
+        # Validate default_hint exists
+        if os.path.exists(f'/sys/class/net/{default_hint}'):
+            return default_hint
+    for name in _list_candidate_interfaces():
+        return name if name else None
+    return None
+
+def get_local_mac(interface: str | None = None):
+    if interface is None:
+        interface = get_active_interface()
+    if not interface:
+        return None
     try:
         with open(f'/sys/class/net/{interface}/address') as f:
             mac = f.read().strip()
@@ -39,7 +91,9 @@ def crear_trama_ethernet(mac_destino, mac_origen, tipo, datos):
 
 # Envío y recepción de tramas
 
-def send_frame(mac_destino, datos, interface='eth0', tipo=0x1234):
+def send_frame(mac_destino, datos, interface: str | None = None, tipo=0x1234):
+    if interface is None:
+        interface = get_active_interface('eth0')
     mac_origen = get_local_mac(interface)
     if not mac_origen:
         print("No se pudo obtener la MAC local.")
@@ -61,7 +115,13 @@ def send_frame(mac_destino, datos, interface='eth0', tipo=0x1234):
 
 
 import select
-def receive_frame(interface='eth0', tipo=0x1234, timeout=3):
+def receive_frame(interface: str | None = None, tipo=0x1234, timeout=15):
+    if interface is None:
+        interface = get_active_interface('eth0')
+    if not interface:
+        print("No hay interfaz de red disponible para recibir.")
+        return None, None
+    s = None
     try:
         s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(tipo))
         s.bind((interface, 0))
@@ -81,12 +141,22 @@ def receive_frame(interface='eth0', tipo=0x1234, timeout=3):
             return None, None
     except PermissionError:
         print("Permiso denegado. Ejecuta como root o con capacidades NET_RAW.")
+        return None, None
     except Exception as e:
         print(f"Error al recibir trama: {e}")
+        return None, None
+    finally:
+        try:
+            if s:
+                s.close()
+        except Exception:
+            pass
 
 # ACK y broadcast
 
-def send_ack(mac_destino, interface='eth0'):
+def send_ack(mac_destino, interface: str | None = None):
+    if interface is None:
+        interface = get_active_interface('eth0')
     mac_origen = get_local_mac(interface)
     trama = crear_trama_ethernet(mac_destino, mac_origen, ACK_TYPE, b'ACK')
     if len(trama) < 60:
@@ -99,7 +169,9 @@ def send_ack(mac_destino, interface='eth0'):
     except Exception:
         pass
 
-def wait_for_ack(interface='eth0', timeout=2):
+def wait_for_ack(interface: str | None = None, timeout=2):
+    if interface is None:
+        interface = get_active_interface('eth0')
     start = time.time()
     while time.time() - start < timeout:
         try:
@@ -110,7 +182,13 @@ def wait_for_ack(interface='eth0', timeout=2):
             pass
     return False
 
-def receive_frame_full(interface='eth0', tipo=0x1234, return_type=False, timeout=3):
+def receive_frame_full(interface: str | None = None, tipo=0x1234, return_type=False, timeout=3):
+    if interface is None:
+        interface = get_active_interface('eth0')
+    if not interface:
+        print("No hay interfaz de red disponible para recibir.")
+        return (None, None, None) if return_type else (None, None)
+    s = None
     try:
         s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(tipo))
         s.bind((interface, 0))
@@ -129,9 +207,16 @@ def receive_frame_full(interface='eth0', tipo=0x1234, return_type=False, timeout
                 return mac_origen, datos
         else:
             print(f"No se recibió ninguna trama en {timeout} segundos.")
-            return None, None
+            return (None, None, None) if return_type else (None, None)
     except Exception as e:
         print(f"Error al recibir trama: {e}")
+        return (None, None, None) if return_type else (None, None)
+    finally:
+        try:
+            if s:
+                s.close()
+        except Exception:
+            pass
 
 # Clase opcional para manipulación OO
 class EthernetFrame:

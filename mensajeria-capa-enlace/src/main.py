@@ -69,12 +69,15 @@ def main():
         elif opcion == '3':
             print("Esperando mensaje...")
             mac_origen, datos = receive_frame()
-            checksum_recibido = datos[0]
-            mensaje = datos[1:]
-            if calcular_checksum(mensaje) == checksum_recibido:
-                print(f"Mensaje recibido de {mac_origen}: {mensaje.decode(errors='ignore')}")
+            if datos is None:
+                print("No se recibió ningún mensaje.")
             else:
-                print("¡Error de integridad! El checksum no coincide.")
+                checksum_recibido = datos[0]
+                mensaje = datos[1:]
+                if calcular_checksum(mensaje) == checksum_recibido:
+                    print(f"Mensaje recibido de {mac_origen}: {mensaje.decode(errors='ignore')}")
+                else:
+                    print("¡Error de integridad! El checksum no coincide.")
 
         elif opcion == '4':
             ruta_destino = input("Ingrese la ruta donde guardar el archivo recibido: ")
