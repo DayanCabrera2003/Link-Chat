@@ -1,6 +1,14 @@
+import socket
+import struct
+import os
+
 import subprocess
 def escanear_arp(interface='eth0'):
     print("Escaneando hosts activos en la LAN...")
+    # Verificar si el comando arp existe
+    if subprocess.getoutput('which arp').strip() == '':
+        print("⚠️  El comando 'arp' no está disponible. Instala 'net-tools' con 'sudo apt-get install net-tools'.")
+        return []
     resultado = subprocess.getoutput(f"arp -n")
     hosts = []
     for linea in resultado.splitlines():
@@ -10,13 +18,18 @@ def escanear_arp(interface='eth0'):
                 ip = partes[0]
                 mac = partes[2]
                 hosts.append((ip, mac))
-    print("Dispositivos detectados:")
-    for ip, mac in hosts:
-        print(f"IP: {ip} | MAC: {mac}")
+    if not hosts:
+        print("No se detectaron dispositivos en la tabla ARP.")
+        print("Consejo: Envía un mensaje o haz ping a algún host para poblar la tabla ARP antes de escanear.")
+    else:
+        print("Dispositivos detectados:")
+        for ip, mac in hosts:
+            print(f"IP: {ip} | MAC: {mac}")
     return hosts
 from .ethernet import send_frame, receive_frame
 from .file_transfer import send_file, receive_file
 from .checksum import calcular_checksum, verificar_checksum
+from .lan_scan import escanear_hosts_ping
 
 def mostrar_menu():
     print("=== Menú de Mensajería ===")
@@ -24,9 +37,10 @@ def mostrar_menu():
     print("2. Enviar archivo")
     print("3. Recibir mensaje")
     print("4. Recibir archivo")
-    print("5. Escanear hosts LAN")
-    print("6. Enviar mensaje broadcast")
-    print("7. Salir")
+    print("5. Escanear hosts LAN (ARP)")
+    print("6. Escanear hosts LAN (Ping)")
+    print("7. Enviar mensaje broadcast")
+    print("8. Salir")
 
 def seleccionar_mac():
     mac_destino = input("Ingrese la dirección MAC de destino (formato: XX:XX:XX:XX:XX:XX): ")
@@ -76,13 +90,15 @@ def main():
         elif opcion == '5':
             escanear_arp()
         elif opcion == '6':
+            escanear_hosts_ping()
+        elif opcion == '7':
             mensaje = input("Mensaje a enviar por broadcast: ").encode()
             checksum = calcular_checksum(mensaje)
             datos = bytes([checksum]) + mensaje
             from .ethernet import BROADCAST_MAC
             send_frame(BROADCAST_MAC, datos)
             print("Mensaje broadcast enviado.")
-        elif opcion == '7':
+        elif opcion == '8':
             print("Saliendo de la aplicación.")
             break
         else:

@@ -188,11 +188,13 @@ def receive_frame_full(interface: str | None = None, tipo=0x1234, return_type=Fa
     if not interface:
         print("No hay interfaz de red disponible para recibir.")
         return (None, None, None) if return_type else (None, None)
+    ETH_P_ALL = 0x0003
     s = None
     try:
-        s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(tipo))
+        s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(ETH_P_ALL))
         s.bind((interface, 0))
         s.setblocking(0)
+        import select
         ready = select.select([s], [], [], timeout)
         if ready[0]:
             trama, addr = s.recvfrom(65535)
@@ -218,6 +220,13 @@ def receive_frame_full(interface: str | None = None, tipo=0x1234, return_type=Fa
         except Exception:
             pass
 
+def format_mac(mac_bytes_or_str):
+    """Convierte MAC a formato estándar xx:xx:xx:xx:xx:xx"""
+    if isinstance(mac_bytes_or_str, bytes):
+        mac = mac_bytes_or_str.hex()
+    else:
+        mac = mac_bytes_or_str.replace(":", "").lower()
+    return ":".join(mac[i:i+2] for i in range(0, 12, 2))
 # Clase opcional para manipulación OO
 class EthernetFrame:
     def __init__(self, destination_mac, source_mac, payload):

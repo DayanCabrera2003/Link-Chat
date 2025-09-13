@@ -36,18 +36,25 @@ def send_file(mac_dest, file_path, interface='eth0', use_ack=True, broadcast=Fal
         header = f"{i}/{total}".encode().ljust(32, b'\x00')
         data = header + frag
         dest = BROADCAST_MAC if broadcast else mac_dest
-        send_frame(dest, data, interface=interface)
-        if use_ack and not broadcast:
-            if not wait_for_ack(interface=interface):
-                print(f"No se recibió ACK para fragmento {i}, reenviando...")
-                send_frame(dest, data, interface=interface)
+        intentos = 0
+        enviado = False
+        while not enviado and intentos < 3:
+            send_frame(dest, data)
+            if use_ack and not broadcast:
+                if wait_for_ack(interface=interface):
+                    enviado = True
+                else:
+                    print(f"No se recibió ACK para fragmento {i}, reenviando...")
+                    intentos += 1
+            else:
+                enviado = True
     print("Archivo/mensaje enviado.")
 
 def receive_file(dest_path, interface='eth0', expect_ack=True, timeout=10):
     """
     Recibe fragmentos y reconstruye el archivo o mensaje.
     """
-    fragments = []
+    fragment_dict = {}
     received = 0
     total_frag = None
     while True:
@@ -61,14 +68,16 @@ def receive_file(dest_path, interface='eth0', expect_ack=True, timeout=10):
         except Exception:
             print("Error al interpretar el encabezado del fragmento. Abortando.")
             break
-        fragments.append(data[32:])
+        fragment_dict[frag_num] = data[32:]
         received += 1
         print(f"Recibido fragmento {frag_num}/{total_frag}")
         if expect_ack:
             send_ack(mac_origin, interface=interface)
         if received >= total_frag:
             break
-    if fragments:
+    if fragment_dict:
+        # Ensamblar en orden
+        fragments = [fragment_dict[i] for i in range(1, total_frag+1) if i in fragment_dict]
         assemble_file(fragments, dest_path)
         print(f"Archivo/mensaje reconstruido en '{dest_path}'")
     else:

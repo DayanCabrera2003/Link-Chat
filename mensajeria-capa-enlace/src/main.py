@@ -87,6 +87,10 @@ def main():
             escanear_arp()
 
         elif opcion == '6':
+            from .lan_scan import escanear_hosts_ping
+            escanear_hosts_ping()
+
+        elif opcion == '7':
             mensaje = input("Mensaje a enviar por broadcast: ").encode()
             checksum = calcular_checksum(mensaje)
             datos = bytes([checksum]) + mensaje
@@ -94,7 +98,7 @@ def main():
             send_frame(BROADCAST_MAC, datos)
             print("Mensaje broadcast enviado.")
 
-        elif opcion == '7':
+        elif opcion == '8':
             print("Saliendo de la aplicación.")
             break
 
