@@ -5,6 +5,7 @@ Programa principal
 
 import utils
 import network_core
+import protocol
 from app_logic import PacketHandler
 
 
@@ -40,8 +41,11 @@ def main():
         
         print("Link-Chat está listo para usar.")
         print("Comandos disponibles:")
+        print("  - send <dest_mac> <mensaje>: Enviar mensaje a una MAC específica")
         print("  - exit: Salir de la aplicación")
-        print("  (Más comandos se añadirán próximamente)\n")
+        print("\nEjemplos:")
+        print("  send ff:ff:ff:ff:ff:ff Hola a todos!")
+        print("  send 08:00:27:7d:2b:8c Hola específico\n")
         
         # Bucle principal de la interfaz de consola
         while True:
@@ -56,9 +60,53 @@ def main():
                 elif command == '':
                     # Ignorar líneas vacías
                     continue
+                elif command.startswith('send '):
+                    # Parsear el comando 'send <dest_mac> <mensaje>'
+                    # Formato: send ff:ff:ff:ff:ff:ff Mensaje de prueba
+                    parts = command.split(None, 2)  # Dividir en máximo 3 partes
+                    
+                    if len(parts) < 3:
+                        print("Error: Formato incorrecto.")
+                        print("Uso: send <dest_mac> <mensaje>")
+                        print("Ejemplo: send ff:ff:ff:ff:ff:ff Hola!")
+                        continue
+                    
+                    # Extraer MAC de destino y mensaje
+                    dest_mac = parts[1]
+                    message = parts[2]
+                    
+                    # Validar formato básico de MAC (xx:xx:xx:xx:xx:xx)
+                    if len(dest_mac) != 17 or dest_mac.count(':') != 5:
+                        print(f"Error: MAC inválida '{dest_mac}'")
+                        print("Formato esperado: xx:xx:xx:xx:xx:xx")
+                        continue
+                    
+                    try:
+                        # Codificar el mensaje a bytes UTF-8
+                        message_bytes = message.encode('utf-8')
+                        
+                        # Crear la cabecera Link-Chat
+                        # PacketType.TEXT indica que es un mensaje de texto
+                        # len(message_bytes) especifica la longitud del payload
+                        header = protocol.LinkChatHeader.pack(
+                            protocol.PacketType.TEXT,
+                            len(message_bytes)
+                        )
+                        
+                        # Construir el payload completo: cabecera + mensaje
+                        full_payload = header + message_bytes
+                        
+                        # Enviar la trama Ethernet con el payload
+                        adapter.send_frame(dest_mac, full_payload)
+                        
+                        print(f"✓ Mensaje enviado a [{dest_mac}]")
+                    
+                    except Exception as e:
+                        print(f"✗ Error al enviar mensaje: {e}")
+                
                 else:
                     print(f"Comando no reconocido: '{command}'")
-                    print("Usa 'exit' para salir.")
+                    print("Comandos disponibles: send, exit")
             
             except KeyboardInterrupt:
                 # Manejar Ctrl+C
