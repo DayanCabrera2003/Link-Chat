@@ -5,6 +5,7 @@ Manejo de sockets crudos (raw sockets) en Capa 2 (Enlace de Datos)
 
 import socket
 import struct
+import threading
 
 import config
 import utils
@@ -161,3 +162,58 @@ class NetworkAdapter:
         
         # Retornar tupla con MAC origen, MAC destino y payload
         return src_mac_str, dest_mac_str, payload
+
+
+def start_listener_thread(adapter: NetworkAdapter, packet_handler_callback):
+    """
+    Inicia un hilo (thread) que escucha continuamente tramas Ethernet entrantes.
+    
+    Crea un hilo daemon que ejecuta un bucle infinito esperando tramas de red.
+    Cada trama recibida se procesa mediante la función callback proporcionada.
+    
+    Args:
+        adapter (NetworkAdapter): Instancia del adaptador de red configurado
+        packet_handler_callback: Función callback que procesa los paquetes recibidos.
+                                 Debe aceptar dos argumentos:
+                                 - src_mac (str): Dirección MAC de origen
+                                 - payload (bytes): Datos recibidos
+    
+    Returns:
+        threading.Thread: El hilo creado e iniciado (útil para debugging o join)
+    
+    Example:
+        >>> def handle_packet(src_mac, payload):
+        ...     print(f"Recibido de {src_mac}: {payload}")
+        >>> adapter = NetworkAdapter('eth0')
+        >>> thread = start_listener_thread(adapter, handle_packet)
+    """
+    
+    def _listener_loop():
+        """
+        Bucle interno que escucha continuamente tramas entrantes.
+        
+        Este bucle se ejecuta indefinidamente en un hilo separado,
+        recibiendo tramas y procesándolas con el callback.
+        """
+        while True:
+            # Recibir una trama desde el adaptador de red
+            # Retorna: (src_mac, dest_mac, payload)
+            src_mac, dest_mac, payload = adapter.receive_frame()
+            
+            # Llamar al callback con la MAC de origen y el payload
+            # El callback es responsable de procesar estos datos
+            # (ej: decodificar mensajes, manejar archivos, etc.)
+            packet_handler_callback(src_mac, payload)
+    
+    # Crear un nuevo hilo que ejecutará la función _listener_loop
+    listener_thread = threading.Thread(target=_listener_loop)
+    
+    # Configurar como daemon: el hilo se cerrará automáticamente
+    # cuando el programa principal termine, sin necesidad de join()
+    listener_thread.daemon = True
+    
+    # Iniciar el hilo (comienza a ejecutar _listener_loop)
+    listener_thread.start()
+    
+    # Retornar el hilo creado
+    return listener_thread
