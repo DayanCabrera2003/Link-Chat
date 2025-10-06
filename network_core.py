@@ -108,3 +108,56 @@ class NetworkAdapter:
         
         # Enviar la trama a través del socket crudo
         self.socket.send(frame)
+    
+    def receive_frame(self):
+        """
+        Recibe una trama Ethernet desde el socket crudo.
+        
+        Espera (bloquea) hasta recibir una trama Ethernet completa, luego
+        desempaqueta la cabecera Ethernet y extrae la información relevante.
+        
+        Returns:
+            tuple: (src_mac: str, dest_mac: str, payload: bytes)
+                - src_mac: Dirección MAC de origen en formato 'xx:xx:xx:xx:xx:xx'
+                - dest_mac: Dirección MAC destino en formato 'xx:xx:xx:xx:xx:xx'
+                - payload: Datos recibidos (bytes) sin la cabecera Ethernet
+        
+        Example:
+            >>> adapter = NetworkAdapter('eth0')
+            >>> src, dest, data = adapter.receive_frame()
+            >>> print(f"From: {src}, To: {dest}, Data: {data}")
+        """
+        # Recibir datos del socket crudo
+        # recvfrom(65535) recibe hasta 65535 bytes (tamaño máximo razonable para una trama)
+        # Retorna tupla: (packet, address)
+        # - packet: bytes con la trama completa (header Ethernet + payload)
+        # - address: información de la dirección (no la usamos aquí)
+        packet, address = self.socket.recvfrom(65535)
+        
+        # Tamaño de la cabecera Ethernet: 14 bytes
+        # - 6 bytes: MAC destino
+        # - 6 bytes: MAC origen
+        # - 2 bytes: EtherType
+        ethernet_header_size = 14
+        
+        # Extraer la cabecera Ethernet de los primeros 14 bytes
+        ethernet_header = packet[:ethernet_header_size]
+        
+        # Desempaquetar la cabecera Ethernet
+        # Formato: !6s6sH (igual que en send_frame)
+        dest_mac_bytes, src_mac_bytes, ethertype = struct.unpack(
+            '!6s6sH',
+            ethernet_header
+        )
+        
+        # Convertir las direcciones MAC de bytes a formato string 'xx:xx:xx:xx:xx:xx'
+        # bytes.hex() convierte bytes a hexadecimal: b'\xaa\xbb' -> 'aabb'
+        # Luego insertamos ':' cada 2 caracteres
+        src_mac_str = ':'.join(src_mac_bytes.hex()[i:i+2] for i in range(0, 12, 2))
+        dest_mac_str = ':'.join(dest_mac_bytes.hex()[i:i+2] for i in range(0, 12, 2))
+        
+        # Extraer el payload (todo después de la cabecera Ethernet)
+        payload = packet[ethernet_header_size:]
+        
+        # Retornar tupla con MAC origen, MAC destino y payload
+        return src_mac_str, dest_mac_str, payload
