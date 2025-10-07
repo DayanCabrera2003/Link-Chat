@@ -23,11 +23,12 @@ class PacketHandler:
         """
         Inicializa el manejador de paquetes.
         
-        Por ahora no requiere configuración inicial, pero puede extenderse
-        en el futuro para mantener estado de transferencias de archivos,
-        historial de mensajes, etc.
+        Mantiene un registro de las transferencias de archivos en curso,
+        usando la dirección MAC de origen como clave.
         """
-        pass
+        # Diccionario para rastrear transferencias de archivos activas
+        # Estructura: {src_mac: {'file': file_object, 'filename': str, 'size': int, 'received': int}}
+        self.file_transfers = {}
     
     def handle_packet(self, src_mac: str, payload: bytes):
         """
@@ -76,16 +77,71 @@ class PacketHandler:
                 # Si falla la decodificación, ignorar el mensaje
                 print(f"[Advertencia] Mensaje corrupto recibido de [{src_mac}]")
         
-        # Aquí se añadirán más tipos de paquetes en el futuro:
-        # elif packet_type_value == protocol.PacketType.FILE_START.value:
-        #     # Manejar inicio de transferencia de archivo
-        #     pass
-        # elif packet_type_value == protocol.PacketType.FILE_DATA.value:
-        #     # Manejar fragmento de archivo
-        #     pass
-        # elif packet_type_value == protocol.PacketType.FILE_END.value:
-        #     # Manejar fin de transferencia de archivo
-        #     pass
+        elif packet_type_value == protocol.PacketType.FILE_START.value:
+            # Inicio de transferencia de archivo
+            try:
+                # Desempaquetar el payload del FILE_START
+                # Estructura: [longitud_nombre (2B)] + [nombre_archivo] + [tamaño_archivo (8B)]
+                
+                # Extraer longitud del nombre del archivo (primeros 2 bytes)
+                filename_len = struct.unpack('!H', content[:2])[0]
+                
+                # Extraer el nombre del archivo
+                filename_bytes = content[2:2 + filename_len]
+                filename = filename_bytes.decode('utf-8')
+                
+                # Extraer el tamaño total del archivo (últimos 8 bytes)
+                file_size = struct.unpack('!Q', content[2 + filename_len:2 + filename_len + 8])[0]
+                
+                # Crear un nombre único para el archivo recibido (evitar sobrescribir)
+                # Agregar prefijo con la MAC del remitente
+                safe_filename = f"received_{filename}"
+                
+                # Abrir archivo para escritura binaria
+                file_object = open(safe_filename, 'wb')
+                
+                # Guardar información de la transferencia en el diccionario
+                self.file_transfers[src_mac] = {
+                    'file': file_object,
+                    'filename': filename,
+                    'safe_filename': safe_filename,
+                    'size': file_size,
+                    'received': 0
+                }
+                
+                print(f"\n📥 Recibiendo archivo '{filename}' ({file_size} bytes) de [{src_mac}]...")
+            
+            except Exception as e:
+                print(f"[Error] No se pudo iniciar recepción de archivo de [{src_mac}]: {e}")
+        
+        elif packet_type_value == protocol.PacketType.FILE_DATA.value:
+            # Fragmento de datos del archivo
+            try:
+                # Buscar la transferencia activa para este remitente
+                if src_mac not in self.file_transfers:
+                    print(f"[Advertencia] Recibido FILE_DATA de [{src_mac}] sin FILE_START previo. Ignorando.")
+                    return
+                
+                transfer = self.file_transfers[src_mac]
+                file_object = transfer['file']
+                
+                # Escribir el fragmento de datos en el archivo
+                file_object.write(content)
+                
+                # Actualizar contador de bytes recibidos
+                transfer['received'] += len(content)
+                
+                # Mostrar progreso
+                progress = (transfer['received'] / transfer['size']) * 100 if transfer['size'] > 0 else 100
+                print(f"  Recibiendo... {transfer['received']}/{transfer['size']} bytes ({progress:.1f}%)")
+            
+            except Exception as e:
+                print(f"[Error] Error al escribir datos de archivo de [{src_mac}]: {e}")
+        
+        elif packet_type_value == protocol.PacketType.FILE_END.value:
+            # Fin de transferencia de archivo
+            # Este caso se implementará en el siguiente prompt
+            pass
     
     def send_file(self, adapter, dest_mac: str, filepath: str):
         """
