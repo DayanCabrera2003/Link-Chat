@@ -6,6 +6,7 @@ Manejo de paquetes y procesamiento de mensajes
 import os
 import struct
 
+import config
 import protocol
 
 
@@ -150,3 +151,40 @@ class PacketHandler:
         adapter.send_frame(dest_mac, file_start_packet)
         
         print(f"✓ FILE_START enviado: '{filename}' ({file_size} bytes) -> [{dest_mac}]")
+        
+        # Abrir el archivo en modo lectura binaria
+        with open(filepath, 'rb') as file:
+            # Contador para seguimiento de progreso
+            bytes_sent = 0
+            chunk_count = 0
+            
+            # Leer y enviar el archivo en fragmentos
+            while True:
+                # Leer un fragmento del archivo del tamaño especificado en config.CHUNK_SIZE
+                chunk = file.read(config.CHUNK_SIZE)
+                
+                # Si no hay más datos que leer, salir del bucle
+                if not chunk:
+                    break
+                
+                # Incrementar contador de fragmentos
+                chunk_count += 1
+                bytes_sent += len(chunk)
+                
+                # Crear la cabecera Link-Chat para FILE_DATA
+                file_data_header = protocol.LinkChatHeader.pack(
+                    protocol.PacketType.FILE_DATA,
+                    len(chunk)
+                )
+                
+                # Construir el paquete completo: cabecera + fragmento de datos
+                file_data_packet = file_data_header + chunk
+                
+                # Enviar el paquete FILE_DATA
+                adapter.send_frame(dest_mac, file_data_packet)
+                
+                # Mostrar progreso
+                progress = (bytes_sent / file_size) * 100 if file_size > 0 else 100
+                print(f"  Enviando... {bytes_sent}/{file_size} bytes ({progress:.1f}%) - Fragmento #{chunk_count}")
+        
+        print(f"✓ Archivo '{filename}' enviado completamente: {chunk_count} fragmentos, {bytes_sent} bytes")
