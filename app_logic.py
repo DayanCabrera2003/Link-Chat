@@ -3,6 +3,9 @@ Lógica de aplicación para Link-Chat
 Manejo de paquetes y procesamiento de mensajes
 """
 
+import os
+import struct
+
 import protocol
 
 
@@ -72,7 +75,7 @@ class PacketHandler:
                 # Si falla la decodificación, ignorar el mensaje
                 print(f"[Advertencia] Mensaje corrupto recibido de [{src_mac}]")
         
-        # Aquí añadiran más tipos de paquetes en el futuro:
+        # Aquí se añadirán más tipos de paquetes en el futuro:
         # elif packet_type_value == protocol.PacketType.FILE_START.value:
         #     # Manejar inicio de transferencia de archivo
         #     pass
@@ -82,3 +85,68 @@ class PacketHandler:
         # elif packet_type_value == protocol.PacketType.FILE_END.value:
         #     # Manejar fin de transferencia de archivo
         #     pass
+    
+    def send_file(self, adapter, dest_mac: str, filepath: str):
+        """
+        Envía un archivo a través de la red en Capa 2.
+        
+        El archivo se envía en múltiples paquetes:
+        1. FILE_START: Metadatos del archivo (nombre y tamaño)
+        2. FILE_DATA: Fragmentos de datos del archivo
+        3. FILE_END: Señal de finalización
+        
+        Args:
+            adapter: Instancia de NetworkAdapter para enviar tramas
+            dest_mac (str): Dirección MAC destino en formato 'xx:xx:xx:xx:xx:xx'
+            filepath (str): Ruta del archivo a enviar
+        
+        Raises:
+            FileNotFoundError: Si el archivo no existe
+            IOError: Si hay problemas al leer el archivo
+        
+        Example:
+            >>> handler = PacketHandler()
+            >>> handler.send_file(adapter, 'ff:ff:ff:ff:ff:ff', '/path/to/file.txt')
+        """
+        # Verificar que el archivo existe
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"El archivo '{filepath}' no existe")
+        
+        # Obtener el nombre del archivo (sin la ruta completa)
+        filename = os.path.basename(filepath)
+        
+        # Obtener el tamaño total del archivo en bytes
+        file_size = os.path.getsize(filepath)
+        
+        # Codificar el nombre del archivo a bytes UTF-8
+        filename_bytes = filename.encode('utf-8')
+        filename_len = len(filename_bytes)
+        
+        # Construir el payload para el paquete FILE_START
+        # Estructura:
+        # - 2 bytes: Longitud del nombre del archivo (!H = unsigned short)
+        # - N bytes: Nombre del archivo en UTF-8
+        # - 8 bytes: Tamaño total del archivo (!Q = unsigned long long)
+        
+        # Empaquetar la longitud del nombre del archivo (2 bytes)
+        filename_len_bytes = struct.pack('!H', filename_len)
+        
+        # Empaquetar el tamaño total del archivo (8 bytes)
+        file_size_bytes = struct.pack('!Q', file_size)
+        
+        # Construir el payload completo del FILE_START
+        file_start_payload = filename_len_bytes + filename_bytes + file_size_bytes
+        
+        # Crear la cabecera Link-Chat para FILE_START
+        file_start_header = protocol.LinkChatHeader.pack(
+            protocol.PacketType.FILE_START,
+            len(file_start_payload)
+        )
+        
+        # Construir el paquete completo: cabecera + payload
+        file_start_packet = file_start_header + file_start_payload
+        
+        # Enviar el paquete FILE_START
+        adapter.send_frame(dest_mac, file_start_packet)
+        
+        print(f"✓ FILE_START enviado: '{filename}' ({file_size} bytes) -> [{dest_mac}]")
