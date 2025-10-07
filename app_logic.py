@@ -188,3 +188,15 @@ class PacketHandler:
                 print(f"  Enviando... {bytes_sent}/{file_size} bytes ({progress:.1f}%) - Fragmento #{chunk_count}")
         
         print(f"✓ Archivo '{filename}' enviado completamente: {chunk_count} fragmentos, {bytes_sent} bytes")
+        
+        # Enviar paquete FILE_END para notificar fin de transferencia
+        # Este paquete no tiene payload, solo la cabecera
+        file_end_header = protocol.LinkChatHeader.pack(
+            protocol.PacketType.FILE_END,
+            0  # Longitud del payload = 0 (sin datos adicionales)
+        )
+        
+        # Enviar el paquete FILE_END (solo cabecera)
+        adapter.send_frame(dest_mac, file_end_header)
+        
+        print(f"✓ FILE_END enviado. Transferencia de '{filename}' completada.")

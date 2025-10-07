@@ -42,10 +42,12 @@ def main():
         print("Link-Chat está listo para usar.")
         print("Comandos disponibles:")
         print("  - send <dest_mac> <mensaje>: Enviar mensaje a una MAC específica")
+        print("  - sendfile <dest_mac> <filepath>: Enviar archivo a una MAC específica")
         print("  - exit: Salir de la aplicación")
         print("\nEjemplos:")
         print("  send ff:ff:ff:ff:ff:ff Hola a todos!")
-        print("  send 08:00:27:7d:2b:8c Hola específico\n")
+        print("  send 08:00:27:7d:2b:8c Hola específico")
+        print("  sendfile ff:ff:ff:ff:ff:ff /path/to/file.txt\n")
         
         # Bucle principal de la interfaz de consola
         while True:
@@ -104,9 +106,43 @@ def main():
                     except Exception as e:
                         print(f"✗ Error al enviar mensaje: {e}")
                 
+                elif command.startswith('sendfile '):
+                    # Parsear el comando 'sendfile <dest_mac> <filepath>'
+                    # Formato: sendfile ff:ff:ff:ff:ff:ff /path/to/file.txt
+                    parts = command.split(None, 2)  # Dividir en máximo 3 partes
+                    
+                    if len(parts) < 3:
+                        print("Error: Formato incorrecto.")
+                        print("Uso: sendfile <dest_mac> <filepath>")
+                        print("Ejemplo: sendfile ff:ff:ff:ff:ff:ff /home/user/documento.pdf")
+                        continue
+                    
+                    # Extraer MAC de destino y ruta del archivo
+                    dest_mac = parts[1]
+                    filepath = parts[2]
+                    
+                    # Validar formato básico de MAC (xx:xx:xx:xx:xx:xx)
+                    if len(dest_mac) != 17 or dest_mac.count(':') != 5:
+                        print(f"Error: MAC inválida '{dest_mac}'")
+                        print("Formato esperado: xx:xx:xx:xx:xx:xx")
+                        continue
+                    
+                    try:
+                        # Llamar al método send_file del handler
+                        print(f"\nIniciando transferencia de archivo...")
+                        handler.send_file(adapter, dest_mac, filepath)
+                        print(f"✓ Transferencia completada exitosamente.\n")
+                    
+                    except FileNotFoundError as e:
+                        print(f"✗ Error: {e}")
+                    except Exception as e:
+                        print(f"✗ Error al enviar archivo: {e}")
+                        import traceback
+                        traceback.print_exc()
+                
                 else:
                     print(f"Comando no reconocido: '{command}'")
-                    print("Comandos disponibles: send, exit")
+                    print("Comandos disponibles: send, sendfile, exit")
             
             except KeyboardInterrupt:
                 # Manejar Ctrl+C
