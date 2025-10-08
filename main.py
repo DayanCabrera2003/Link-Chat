@@ -43,12 +43,13 @@ def main():
         print("Link-Chat está listo para usar.")
         print("Comandos disponibles:")
         print("  - discover: Descubrir dispositivos en la red local")
+        print("  - broadcast <mensaje>: Enviar mensaje a todos los dispositivos (broadcast)")
         print("  - send <dest_mac> <mensaje>: Enviar mensaje a una MAC específica")
         print("  - sendfile <dest_mac> <filepath>: Enviar archivo a una MAC específica")
         print("  - exit: Salir de la aplicación")
         print("\nEjemplos:")
         print("  discover")
-        print("  send ff:ff:ff:ff:ff:ff Hola a todos!")
+        print("  broadcast Hola a todos en la red!")
         print("  send 08:00:27:7d:2b:8c Hola específico")
         print("  sendfile ff:ff:ff:ff:ff:ff /path/to/file.txt\n")
         
@@ -100,6 +101,43 @@ def main():
                     
                     except Exception as e:
                         print(f"✗ Error al enviar solicitud de descubrimiento: {e}")
+                
+                elif command.startswith('broadcast '):
+                    # Parsear el comando 'broadcast <mensaje>'
+                    # Formato: broadcast Hola a todos!
+                    parts = command.split(None, 1)  # Dividir en máximo 2 partes
+                    
+                    if len(parts) < 2:
+                        print("Error: Formato incorrecto.")
+                        print("Uso: broadcast <mensaje>")
+                        print("Ejemplo: broadcast Hola a todos en la red!")
+                        continue
+                    
+                    # Extraer el mensaje
+                    message = parts[1]
+                    
+                    try:
+                        # Codificar el mensaje a bytes UTF-8
+                        message_bytes = message.encode('utf-8')
+                        
+                        # Crear la cabecera Link-Chat
+                        # PacketType.TEXT indica que es un mensaje de texto
+                        # len(message_bytes) especifica la longitud del payload
+                        header = protocol.LinkChatHeader.pack(
+                            protocol.PacketType.TEXT,
+                            len(message_bytes)
+                        )
+                        
+                        # Construir el payload completo: cabecera + mensaje
+                        full_payload = header + message_bytes
+                        
+                        # Enviar la trama Ethernet con broadcast MAC
+                        adapter.send_frame(config.BROADCAST_MAC, full_payload)
+                        
+                        print(f"✓ Mensaje broadcast enviado a toda la red")
+                    
+                    except Exception as e:
+                        print(f"✗ Error al enviar mensaje broadcast: {e}")
                 
                 elif command.startswith('send '):
                     # Parsear el comando 'send <dest_mac> <mensaje>'
@@ -181,7 +219,7 @@ def main():
                 
                 else:
                     print(f"Comando no reconocido: '{command}'")
-                    print("Comandos disponibles: discover, send, sendfile, exit")
+                    print("Comandos disponibles: discover, broadcast, send, sendfile, exit")
             
             except KeyboardInterrupt:
                 # Manejar Ctrl+C
