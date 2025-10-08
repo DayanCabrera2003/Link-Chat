@@ -16,11 +16,15 @@ class PacketType(Enum):
     - FILE_START: Inicio de transferencia de archivo (contiene metadatos)
     - FILE_DATA: Fragmento de datos del archivo
     - FILE_END: Fin de transferencia de archivo
+    - DISCOVERY_REQUEST: Solicitud de descubrimiento broadcast (quién está en la red)
+    - DISCOVERY_RESPONSE: Respuesta a solicitud de descubrimiento (identificación)
     """
     TEXT = 0x01
     FILE_START = 0x02
     FILE_DATA = 0x03
     FILE_END = 0x04
+    DISCOVERY_REQUEST = 0x05
+    DISCOVERY_RESPONSE = 0x06
 
 
 class LinkChatHeader:

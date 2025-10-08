@@ -3,6 +3,7 @@ Link-Chat - Aplicación de chat y transferencia de archivos en Capa 2
 Programa principal
 """
 
+import config
 import utils
 import network_core
 import protocol
@@ -41,10 +42,12 @@ def main():
         
         print("Link-Chat está listo para usar.")
         print("Comandos disponibles:")
+        print("  - discover: Descubrir dispositivos en la red local")
         print("  - send <dest_mac> <mensaje>: Enviar mensaje a una MAC específica")
         print("  - sendfile <dest_mac> <filepath>: Enviar archivo a una MAC específica")
         print("  - exit: Salir de la aplicación")
         print("\nEjemplos:")
+        print("  discover")
         print("  send ff:ff:ff:ff:ff:ff Hola a todos!")
         print("  send 08:00:27:7d:2b:8c Hola específico")
         print("  sendfile ff:ff:ff:ff:ff:ff /path/to/file.txt\n")
@@ -62,6 +65,37 @@ def main():
                 elif command == '':
                     # Ignorar líneas vacías
                     continue
+                elif command == 'discover':
+                    # Comando de descubrimiento de dispositivos en la red
+                    try:
+                        # Pedir al usuario su nombre de usuario
+                        username = input("Ingresa tu nombre de usuario: ").strip()
+                        
+                        if not username:
+                            print("Error: El nombre de usuario no puede estar vacío.")
+                            continue
+                        
+                        # Codificar el nombre de usuario a bytes
+                        username_bytes = username.encode('utf-8')
+                        
+                        # Crear la cabecera Link-Chat para DISCOVERY_REQUEST
+                        discovery_header = protocol.LinkChatHeader.pack(
+                            protocol.PacketType.DISCOVERY_REQUEST,
+                            len(username_bytes)
+                        )
+                        
+                        # Construir el payload completo: cabecera + nombre de usuario
+                        discovery_payload = discovery_header + username_bytes
+                        
+                        # Enviar broadcast a todas las máquinas en la red local
+                        adapter.send_frame(config.BROADCAST_MAC, discovery_payload)
+                        
+                        print(f"✓ Solicitud de descubrimiento enviada como '{username}' a la red")
+                        print("  Esperando respuestas...\n")
+                    
+                    except Exception as e:
+                        print(f"✗ Error al enviar solicitud de descubrimiento: {e}")
+                
                 elif command.startswith('send '):
                     # Parsear el comando 'send <dest_mac> <mensaje>'
                     # Formato: send ff:ff:ff:ff:ff:ff Mensaje de prueba
@@ -142,7 +176,7 @@ def main():
                 
                 else:
                     print(f"Comando no reconocido: '{command}'")
-                    print("Comandos disponibles: send, sendfile, exit")
+                    print("Comandos disponibles: discover, send, sendfile, exit")
             
             except KeyboardInterrupt:
                 # Manejar Ctrl+C
