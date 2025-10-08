@@ -900,20 +900,7 @@ SOFTWARE.
 
 ---
 
-## 📚 Referencias y Recursos
 
-### Documentación Técnica
-- [Python Socket Programming](https://docs.python.org/3/library/socket.html)
-- [Ethernet Frame Format](https://en.wikipedia.org/wiki/Ethernet_frame)
-- [OSI Model](https://en.wikipedia.org/wiki/OSI_model)
-- [IEEE 802.3 (Ethernet)](https://standards.ieee.org/standard/802_3-2018.html)
-
-### Tutoriales Recomendados
-- [Beej's Guide to Network Programming](https://beej.us/guide/bgnet/)
-- [Python struct module](https://docs.python.org/3/library/struct.html)
-- [Linux Raw Sockets](https://man7.org/linux/man-pages/man7/raw.7.html)
-
----
 
 <div align="center">
 
