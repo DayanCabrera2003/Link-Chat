@@ -41,6 +41,13 @@ def main():
         print(f"✓ Listener iniciado en segundo plano\n")
         
         print("Link-Chat está listo para usar.")
+        
+        # Advertencia si es WiFi
+        if 'wl' in interface or 'wifi' in interface.lower():
+            print(f"\n⚠ ADVERTENCIA: Interfaz WiFi detectada ({interface})")
+            print("  WiFi puede no soportar broadcast de capa 2 correctamente.")
+            print("  Para mejor rendimiento, usa cable Ethernet o comunicación directa (unicast).\n")
+        
         print("Comandos disponibles:")
         print("  - discover: Descubrir dispositivos en la red local")
         print("  - broadcast <mensaje>: Enviar mensaje a todos los dispositivos (broadcast)")
@@ -51,7 +58,8 @@ def main():
         print("  discover")
         print("  broadcast Hola a todos en la red!")
         print("  send 08:00:27:7d:2b:8c Hola específico")
-        print("  sendfile ff:ff:ff:ff:ff:ff /path/to/file.txt\n")
+        print("  sendfile ff:ff:ff:ff:ff:ff /path/to/file.txt")
+        print("\nNOTA: En WiFi, usa 'send <mac>' en lugar de 'broadcast' para mejor compatibilidad.\n")
         
         # Bucle principal de la interfaz de consola
         while True:
