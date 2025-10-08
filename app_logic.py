@@ -140,8 +140,28 @@ class PacketHandler:
         
         elif packet_type_value == protocol.PacketType.FILE_END.value:
             # Fin de transferencia de archivo
-            # Este caso se implementará en el siguiente prompt
-            pass
+            try:
+                # Buscar la transferencia activa para este remitente
+                if src_mac not in self.file_transfers:
+                    print(f"[Advertencia] Recibido FILE_END de [{src_mac}] sin transferencia activa. Ignorando.")
+                    return
+                
+                transfer = self.file_transfers[src_mac]
+                file_object = transfer['file']
+                filename = transfer['filename']
+                safe_filename = transfer['safe_filename']
+                
+                # Cerrar el archivo
+                file_object.close()
+                
+                # Eliminar la entrada del diccionario de transferencias
+                del self.file_transfers[src_mac]
+                
+                # Mensaje de confirmación
+                print(f"\n✅ Archivo '{filename}' recibido correctamente y guardado como '{safe_filename}'\n")
+            
+            except Exception as e:
+                print(f"[Error] Error al finalizar recepción de archivo de [{src_mac}]: {e}")
     
     def send_file(self, adapter, dest_mac: str, filepath: str):
         """
