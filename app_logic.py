@@ -29,6 +29,30 @@ class PacketHandler:
         # Diccionario para rastrear transferencias de archivos activas
         # Estructura: {src_mac: {'file': file_object, 'filename': str, 'size': int, 'received': int}}
         self.file_transfers = {}
+        
+        # Almacenar referencia al adaptador de red para poder enviar respuestas
+        self.adapter = None
+        
+        # Nombre de usuario para respuestas de descubrimiento
+        self.username = None
+    
+    def set_adapter(self, adapter):
+        """
+        Configura el adaptador de red para poder enviar respuestas.
+        
+        Args:
+            adapter: Instancia de NetworkAdapter
+        """
+        self.adapter = adapter
+    
+    def set_username(self, username: str):
+        """
+        Configura el nombre de usuario para respuestas de descubrimiento.
+        
+        Args:
+            username (str): Nombre de usuario local
+        """
+        self.username = username
     
     def handle_packet(self, src_mac: str, payload: bytes):
         """
@@ -162,6 +186,59 @@ class PacketHandler:
             
             except Exception as e:
                 print(f"[Error] Error al finalizar recepción de archivo de [{src_mac}]: {e}")
+        
+        elif packet_type_value == protocol.PacketType.DISCOVERY_REQUEST.value:
+            # Solicitud de descubrimiento recibida
+            try:
+                # Decodificar el nombre de usuario del solicitante
+                requester_username = content.decode('utf-8')
+                
+                print(f"\n🔍 Solicitud de descubrimiento de '{requester_username}' [{src_mac}]")
+                
+                # Verificar que tengamos un adaptador y nombre de usuario configurados
+                if self.adapter is None:
+                    print("[Advertencia] No se puede responder: adaptador no configurado")
+                    return
+                
+                if self.username is None:
+                    print("[Advertencia] No se puede responder: nombre de usuario no configurado")
+                    return
+                
+                # Preparar respuesta con nuestro nombre de usuario
+                response_username_bytes = self.username.encode('utf-8')
+                
+                # Crear cabecera DISCOVERY_RESPONSE
+                response_header = protocol.LinkChatHeader.pack(
+                    protocol.PacketType.DISCOVERY_RESPONSE,
+                    len(response_username_bytes)
+                )
+                
+                # Construir payload completo
+                response_payload = response_header + response_username_bytes
+                
+                # Enviar respuesta directamente al solicitante (unicast a src_mac)
+                self.adapter.send_frame(src_mac, response_payload)
+                
+                print(f"✓ Respuesta enviada como '{self.username}' a [{src_mac}]\n")
+            
+            except UnicodeDecodeError:
+                print(f"[Advertencia] DISCOVERY_REQUEST corrupto recibido de [{src_mac}]")
+            except Exception as e:
+                print(f"[Error] Error al procesar DISCOVERY_REQUEST de [{src_mac}]: {e}")
+        
+        elif packet_type_value == protocol.PacketType.DISCOVERY_RESPONSE.value:
+            # Respuesta de descubrimiento recibida
+            try:
+                # Decodificar el nombre de usuario del que respondió
+                responder_username = content.decode('utf-8')
+                
+                # Mostrar usuario encontrado
+                print(f"👤 Usuario encontrado: '{responder_username}' en [{src_mac}]")
+            
+            except UnicodeDecodeError:
+                print(f"[Advertencia] DISCOVERY_RESPONSE corrupto recibido de [{src_mac}]")
+            except Exception as e:
+                print(f"[Error] Error al procesar DISCOVERY_RESPONSE de [{src_mac}]: {e}")
     
     def send_file(self, adapter, dest_mac: str, filepath: str):
         """

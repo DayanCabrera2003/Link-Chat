@@ -75,6 +75,11 @@ def main():
                             print("Error: El nombre de usuario no puede estar vacío.")
                             continue
                         
+                        # Configurar el nombre de usuario y adaptador en el handler
+                        # para que pueda responder a solicitudes de descubrimiento
+                        handler.set_username(username)
+                        handler.set_adapter(adapter)
+                        
                         # Codificar el nombre de usuario a bytes
                         username_bytes = username.encode('utf-8')
                         
