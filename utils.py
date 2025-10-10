@@ -7,33 +7,37 @@ import socket
 import uuid
 
 
-def get_mac_address() -> str:
+def get_mac_address(interface: str) -> str:
     """
-    Obtiene la dirección MAC de la máquina actual.
+    Obtiene la dirección MAC de una interfaz de red específica.
     
-    Utiliza uuid.getnode() que retorna la dirección MAC como un número entero
-    de 48 bits. Este número se convierte a formato hexadecimal estándar
-    separado por dos puntos.
+    Lee la dirección MAC del sistema de archivos sysfs de Linux, que es el
+    método más fiable para una interfaz concreta.
     
+    Args:
+        interface (str): Nombre de la interfaz (ej: 'eth0')
+        
     Returns:
-        str: Dirección MAC en formato 'xx:xx:xx:xx:xx:xx' (ejemplo: '08:00:27:7d:2b:8c')
+        str: Dirección MAC en formato 'xx:xx:xx:xx:xx:xx'
+    
+    Raises:
+        IOError: Si no se puede leer la dirección MAC para la interfaz dada.
     
     Example:
-        >>> mac = get_mac_address()
+        >>> mac = get_mac_address('eth0')
         >>> print(mac)
         '08:00:27:7d:2b:8c'
     """
-    # Obtener el identificador único del nodo (dirección MAC) como entero
-    mac_int = uuid.getnode()
-    
-    # Convertir el entero a hexadecimal (48 bits = 12 dígitos hex)
-    # El formato '{:012x}' asegura 12 caracteres hexadecimales con ceros a la izquierda
-    mac_hex = '{:012x}'.format(mac_int)
-    
-    # Formatear como 'xx:xx:xx:xx:xx:xx' insertando ':' cada 2 caracteres
-    mac_address = ':'.join(mac_hex[i:i+2] for i in range(0, 12, 2))
-    
-    return mac_address
+    try:
+        # En sistemas Linux, la forma más fiable es leer desde sysfs
+        with open(f'/sys/class/net/{interface}/address') as f:
+            mac = f.read().strip()
+        return mac
+    except FileNotFoundError:
+        raise IOError(f"No se pudo encontrar la dirección MAC para la interfaz '{interface}'. "
+                      "Verifique que la interfaz existe y que está en un sistema Linux.")
+    except Exception as e:
+        raise IOError(f"Error al leer la dirección MAC para '{interface}': {e}")
 
 
 def find_network_interface() -> str:

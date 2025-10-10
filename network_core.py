@@ -63,7 +63,7 @@ class NetworkAdapter:
         
         # Obtener y almacenar la dirección MAC de origen de esta máquina
         # Se usará como dirección MAC de origen en todas las tramas enviadas
-        self.src_mac = utils.get_mac_address()
+        self.src_mac = utils.get_mac_address(self.interface_name)
     
     def send_frame(self, dest_mac_str: str, payload: bytes):
         """

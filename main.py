@@ -1,6 +1,6 @@
 """
 Link-Chat - Aplicación de chat y transferencia de archivos en Capa 2
-Programa principal
+Programa principal con configuración automática de red
 """
 
 import config
@@ -8,246 +8,302 @@ import utils
 import network_core
 import protocol
 from app_logic import PacketHandler
+import subprocess
+import sys
+import os
+import socket
+import time
+import threading
+
+
+def run_command(cmd, check=False):
+    """Ejecuta un comando del sistema y retorna el output"""
+    try:
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, stderr=subprocess.DEVNULL)
+        if check and result.returncode != 0:
+            return None
+        return result.stdout
+    except:
+        return None
+
+
+def find_and_setup_ethernet():
+    """
+    Encuentra y configura automáticamente una interfaz Ethernet.
+    Si no hay Ethernet, usa WiFi como fallback.
+    
+    Returns:
+        tuple: (interface_name, is_ethernet, warnings)
+    """
+    warnings = []
+    
+    print("🔍 Buscando interfaces de red...")
+    
+    # Obtener todas las interfaces
+    interfaces = socket.if_nameindex()
+    ethernet_interfaces = []
+    wifi_interfaces = []
+    
+    for idx, name in interfaces:
+        # Ignorar loopback, docker, proton, vpn
+        if any(x in name.lower() for x in ['lo', 'docker', 'proton', 'ipv6', 'tun', 'tap']):
+            continue
+        
+        # Clasificar por tipo
+        if any(x in name.lower() for x in ['wl', 'wifi', 'wlan']):
+            wifi_interfaces.append(name)
+        else:
+            ethernet_interfaces.append(name)
+    
+    # Prioridad: Ethernet > WiFi
+    target_interface = None
+    is_ethernet = False
+    
+    if ethernet_interfaces:
+        print(f"✓ Interfaces Ethernet encontradas: {', '.join(ethernet_interfaces)}")
+        target_interface = ethernet_interfaces[0]
+        is_ethernet = True
+    elif wifi_interfaces:
+        print(f"⚠ No se encontró Ethernet, usando WiFi: {wifi_interfaces[0]}")
+        warnings.append("⚠ ADVERTENCIA: Usando WiFi en lugar de Ethernet")
+        warnings.append("  El broadcast de capa 2 puede no funcionar correctamente")
+        warnings.append("  RECOMENDACIÓN: Conecta un cable Ethernet para mejor rendimiento")
+        target_interface = wifi_interfaces[0]
+        is_ethernet = False
+    else:
+        raise IOError("No se encontraron interfaces de red válidas")
+    
+    # Verificar y activar la interfaz si está DOWN
+    print(f"\n🔧 Configurando interfaz: {target_interface}")
+    
+    status_output = run_command(f"ip link show {target_interface}")
+    
+    if status_output and 'state DOWN' in status_output:
+        print(f"  └─ Interfaz está DOWN, activando...")
+        run_command(f"ip link set {target_interface} up")
+        
+        time.sleep(2)
+        
+        # Verificar nuevamente
+        status_output = run_command(f"ip link show {target_interface}")
+        if status_output and 'state UP' in status_output:
+            print(f"  └─ ✓ Interfaz activada correctamente")
+        else:
+            warnings.append(f"⚠ No se pudo activar la interfaz {target_interface}")
+    elif status_output and 'state UP' in status_output:
+        print(f"  └─ ✓ Interfaz ya está activa")
+    
+    # Si es Ethernet, verificar link físico
+    if is_ethernet:
+        link_output = run_command(f"ethtool {target_interface}")
+        if link_output:
+            if 'Link detected: yes' in link_output:
+                print(f"  └─ ✓ Cable Ethernet conectado")
+                
+                # Mostrar velocidad si está disponible
+                for line in link_output.split('\n'):
+                    if 'Speed:' in line:
+                        speed = line.split(':')[1].strip()
+                        print(f"      └─ Velocidad: {speed}")
+                        break
+            elif 'Link detected: no' in link_output:
+                warnings.append("⚠ ADVERTENCIA: Cable Ethernet desconectado")
+                warnings.append("  Verifica que el cable esté bien conectado")
+    
+    # Verificar si tiene IP configurada (solo informativo, NO es necesario para Capa 2)
+    addr_output = run_command(f"ip addr show {target_interface}")
+    has_ip = addr_output and 'inet ' in addr_output
+    
+    if has_ip:
+        print(f"  └─ ℹ️  Interfaz tiene IP configurada (no necesario para Link-Chat)")
+    else:
+        print(f"  └─ ℹ️  Interfaz sin IP (normal para comunicación pura de Capa 2)")
+    
+    return target_interface, is_ethernet, warnings
+
+
+def check_firewall():
+    """Verifica y advierte sobre firewall activo"""
+    result = run_command("ufw status")
+    
+    if result and 'Status: active' in result:
+        return [
+            "⚠ ADVERTENCIA: Firewall UFW está activo",
+            "  Esto puede bloquear paquetes de Link-Chat",
+            "  Si tienes problemas de conexión, desactívalo con: sudo ufw disable"
+        ]
+    
+    return []
 
 
 def main():
     """
-    Función principal de Link-Chat.
-    
-    Inicializa el adaptador de red, el manejador de paquetes y el listener,
-    luego proporciona una interfaz de consola para interactuar con la aplicación.
+    Función principal de Link-Chat con configuración automática.
     """
-    print("=== Link-Chat - Chat en Capa 2 ===")
-    print("Inicializando...\n")
+    print("=" * 70)
+    print("         💬 Link-Chat - Chat en Capa 2")
+    print("=" * 70)
+    print()
+    
+    # Verificar permisos de root
+    if os.geteuid() != 0:
+        print("❌ ERROR: Este programa requiere privilegios de root para usar sockets crudos.")
+        print("   Por favor, ejecútalo con 'sudo python3 main.py'")
+        return
+    
+    all_warnings = []
     
     try:
-        # Buscar una interfaz de red adecuada (excluyendo loopback)
-        interface = utils.find_network_interface()
-        print(f"✓ Interfaz de red encontrada: {interface}")
+        # 1. Configuración de red
+        # ========================
+        target_interface, is_ethernet, net_warnings = find_and_setup_ethernet()
+        all_warnings.extend(net_warnings)
         
-        # Crear el adaptador de red con la interfaz encontrada
-        # NOTA: Requiere privilegios de root/sudo para crear raw sockets
-        adapter = network_core.NetworkAdapter(interface)
-        print(f"✓ Adaptador de red inicializado")
-        print(f"  Dirección MAC local: {adapter.src_mac}")
+        # 2. Verificación de Firewall
+        # ===========================
+        fw_warnings = check_firewall()
+        all_warnings.extend(fw_warnings)
         
-        # Crear el manejador de paquetes
-        handler = PacketHandler()
-        print(f"✓ Manejador de paquetes creado")
+        # 3. Inicialización del Adaptador de Red
+        # ======================================
+        print(f"\n🚀 Inicializando en interfaz: {target_interface}")
+        adapter = network_core.NetworkAdapter(target_interface)
+        print(f"  └─ MAC de origen: {adapter.src_mac}")
         
-        # Iniciar el hilo listener que escuchará tramas entrantes
-        # El listener ejecutará handler.handle_packet() para cada paquete recibido
-        listener_thread = network_core.start_listener_thread(adapter, handler.handle_packet)
-        print(f"✓ Listener iniciado en segundo plano\n")
+        # 4. Configuración del Manejador de Paquetes
+        # ==========================================
+        packet_handler = PacketHandler()
+        packet_handler.set_adapter(adapter)
         
-        print("Link-Chat está listo para usar.")
+        # 5. Inicio del Hilo Listener
+        # ===========================
+        network_core.start_listener_thread(adapter, packet_handler.handle_packet)
+        print("  └─ Escuchando en segundo plano...")
         
-        # Advertencia si es WiFi
-        if 'wl' in interface or 'wifi' in interface.lower():
-            print(f"\n⚠ ADVERTENCIA: Interfaz WiFi detectada ({interface})")
-            print("  WiFi puede no soportar broadcast de capa 2 correctamente.")
-            print("  Para mejor rendimiento, usa cable Ethernet o comunicación directa (unicast).\n")
+        # 6. Configuración del nombre de usuario
+        # ======================================
+        username = input("\n👤 Ingresa tu nombre de usuario: ").strip()
+        while not username:
+            username = input("👤 El nombre no puede estar vacío. Ingresa tu nombre: ").strip()
+        packet_handler.set_username(username)
+        print(f"¡Hola, {username}!")
         
-        print("Comandos disponibles:")
-        print("  - discover: Descubrir dispositivos en la red local")
-        print("  - broadcast <mensaje>: Enviar mensaje a todos los dispositivos (broadcast)")
-        print("  - send <dest_mac> <mensaje>: Enviar mensaje a una MAC específica")
-        print("  - sendfile <dest_mac> <filepath>: Enviar archivo a una MAC específica")
-        print("  - exit: Salir de la aplicación")
-        print("\nEjemplos:")
-        print("  discover")
-        print("  broadcast Hola a todos en la red!")
-        print("  send 08:00:27:7d:2b:8c Hola específico")
-        print("  sendfile ff:ff:ff:ff:ff:ff /path/to/file.txt")
-        print("\nNOTA: En WiFi, usa 'send <mac>' en lugar de 'broadcast' para mejor compatibilidad.\n")
+        # Mostrar advertencias si las hay
+        if all_warnings:
+            print("\n" + "="*30 + " AVISOS " + "="*30)
+            for warning in all_warnings:
+                print(warning)
+            print("=" * 70)
         
-        # Bucle principal de la interfaz de consola
+        # 7. Bucle Principal de Comandos
+        # ==============================
+        print("\n✅ Sistema listo. Escribe 'help' para ver los comandos.")
+        
         while True:
             try:
                 # Leer comando del usuario
-                command = input("> ").strip()
+                user_input = input(f"[{username}]> ").strip()
+                
+                if not user_input:
+                    continue
+                
+                parts = user_input.split()
+                command = parts[0].lower()
                 
                 # Procesar comandos
-                if command == 'exit':
-                    print("\nCerrando Link-Chat...")
+                if command == "exit":
                     break
-                elif command == '':
-                    # Ignorar líneas vacías
-                    continue
-                elif command == 'discover':
-                    # Comando de descubrimiento de dispositivos en la red
-                    try:
-                        # Pedir al usuario su nombre de usuario
-                        username = input("Ingresa tu nombre de usuario: ").strip()
-                        
-                        if not username:
-                            print("Error: El nombre de usuario no puede estar vacío.")
-                            continue
-                        
-                        # Configurar el nombre de usuario y adaptador en el handler
-                        # para que pueda responder a solicitudes de descubrimiento
-                        handler.set_username(username)
-                        handler.set_adapter(adapter)
-                        
-                        # Codificar el nombre de usuario a bytes
-                        username_bytes = username.encode('utf-8')
-                        
-                        # Crear la cabecera Link-Chat para DISCOVERY_REQUEST
-                        discovery_header = protocol.LinkChatHeader.pack(
-                            protocol.PacketType.DISCOVERY_REQUEST,
-                            len(username_bytes)
-                        )
-                        
-                        # Construir el payload completo: cabecera + nombre de usuario
-                        discovery_payload = discovery_header + username_bytes
-                        
-                        # Enviar broadcast a todas las máquinas en la red local
-                        adapter.send_frame(config.BROADCAST_MAC, discovery_payload)
-                        
-                        print(f"✓ Solicitud de descubrimiento enviada como '{username}' a la red")
-                        print("  Esperando respuestas...\n")
-                    
-                    except Exception as e:
-                        print(f"✗ Error al enviar solicitud de descubrimiento: {e}")
                 
-                elif command.startswith('broadcast '):
-                    # Parsear el comando 'broadcast <mensaje>'
-                    # Formato: broadcast Hola a todos!
-                    parts = command.split(None, 1)  # Dividir en máximo 2 partes
-                    
-                    if len(parts) < 2:
-                        print("Error: Formato incorrecto.")
-                        print("Uso: broadcast <mensaje>")
-                        print("Ejemplo: broadcast Hola a todos en la red!")
-                        continue
-                    
-                    # Extraer el mensaje
-                    message = parts[1]
-                    
-                    try:
-                        # Codificar el mensaje a bytes UTF-8
-                        message_bytes = message.encode('utf-8')
-                        
-                        # Crear la cabecera Link-Chat
-                        # PacketType.TEXT indica que es un mensaje de texto
-                        # len(message_bytes) especifica la longitud del payload
-                        header = protocol.LinkChatHeader.pack(
-                            protocol.PacketType.TEXT,
-                            len(message_bytes)
-                        )
-                        
-                        # Construir el payload completo: cabecera + mensaje
-                        full_payload = header + message_bytes
-                        
-                        # Enviar la trama Ethernet con broadcast MAC
-                        adapter.send_frame(config.BROADCAST_MAC, full_payload)
-                        
-                        print(f"✓ Mensaje broadcast enviado a toda la red")
-                    
-                    except Exception as e:
-                        print(f"✗ Error al enviar mensaje broadcast: {e}")
+                elif command == "help":
+                    print("\nComandos disponibles:")
+                    print("  send <MAC_destino> <mensaje>   - Envía un mensaje a una MAC específica")
+                    print("  broadcast <mensaje>            - Envía un mensaje a todos en la red")
+                    print("  file <MAC_destino> <ruta_archivo> - Envía un archivo a una MAC")
+                    print("  discover                       - Busca otros usuarios en la red")
+                    print("  exit                           - Cierra la aplicación")
                 
-                elif command.startswith('send '):
-                    # Parsear el comando 'send <dest_mac> <mensaje>'
-                    # Formato: send ff:ff:ff:ff:ff:ff Mensaje de prueba
-                    parts = command.split(None, 2)  # Dividir en máximo 3 partes
-                    
+                elif command == "send":
                     if len(parts) < 3:
-                        print("Error: Formato incorrecto.")
-                        print("Uso: send <dest_mac> <mensaje>")
-                        print("Ejemplo: send ff:ff:ff:ff:ff:ff Hola!")
+                        print("❌ Uso: send <MAC_destino> <mensaje>")
                         continue
                     
-                    # Extraer MAC de destino y mensaje
                     dest_mac = parts[1]
-                    message = parts[2]
+                    message = ' '.join(parts[2:])
                     
-                    # Validar formato básico de MAC (xx:xx:xx:xx:xx:xx)
-                    if len(dest_mac) != 17 or dest_mac.count(':') != 5:
-                        print(f"Error: MAC inválida '{dest_mac}'")
-                        print("Formato esperado: xx:xx:xx:xx:xx:xx")
-                        continue
+                    # Crear cabecera y payload
+                    payload = message.encode('utf-8')
+                    header = protocol.LinkChatHeader.pack(protocol.PacketType.TEXT, len(payload))
                     
-                    try:
-                        # Codificar el mensaje a bytes UTF-8
-                        message_bytes = message.encode('utf-8')
-                        
-                        # Crear la cabecera Link-Chat
-                        # PacketType.TEXT indica que es un mensaje de texto
-                        # len(message_bytes) especifica la longitud del payload
-                        header = protocol.LinkChatHeader.pack(
-                            protocol.PacketType.TEXT,
-                            len(message_bytes)
-                        )
-                        
-                        # Construir el payload completo: cabecera + mensaje
-                        full_payload = header + message_bytes
-                        
-                        # Enviar la trama Ethernet con el payload
-                        adapter.send_frame(dest_mac, full_payload)
-                        
-                        print(f"✓ Mensaje enviado a [{dest_mac}]")
-                    
-                    except Exception as e:
-                        print(f"✗ Error al enviar mensaje: {e}")
+                    # Enviar trama
+                    print(f"-> Enviando a {dest_mac}...")
+                    adapter.send_frame(dest_mac, header + payload)
                 
-                elif command.startswith('sendfile '):
-                    # Parsear el comando 'sendfile <dest_mac> <filepath>'
-                    # Formato: sendfile ff:ff:ff:ff:ff:ff /path/to/file.txt
-                    parts = command.split(None, 2)  # Dividir en máximo 3 partes
-                    
-                    if len(parts) < 3:
-                        print("Error: Formato incorrecto.")
-                        print("Uso: sendfile <dest_mac> <filepath>")
-                        print("Ejemplo: sendfile ff:ff:ff:ff:ff:ff /home/user/documento.pdf")
+                elif command == "broadcast":
+                    if len(parts) < 2:
+                        print("❌ Uso: broadcast <mensaje>")
                         continue
                     
-                    # Extraer MAC de destino y ruta del archivo
+                    message = ' '.join(parts[1:])
+                    
+                    # Crear cabecera y payload
+                    payload = message.encode('utf-8')
+                    header = protocol.LinkChatHeader.pack(protocol.PacketType.TEXT, len(payload))
+                    
+                    # Enviar trama a la dirección de broadcast
+                    print("-> Enviando a todos (broadcast)...")
+                    adapter.send_frame(config.BROADCAST_MAC, header + payload)
+                
+                elif command == "file":
+                    if len(parts) != 3:
+                        print("❌ Uso: file <MAC_destino> <ruta_archivo>")
+                        continue
+                    
                     dest_mac = parts[1]
                     filepath = parts[2]
                     
-                    # Validar formato básico de MAC (xx:xx:xx:xx:xx:xx)
-                    if len(dest_mac) != 17 or dest_mac.count(':') != 5:
-                        print(f"Error: MAC inválida '{dest_mac}'")
-                        print("Formato esperado: xx:xx:xx:xx:xx:xx")
+                    if not os.path.exists(filepath):
+                        print(f"❌ Error: El archivo '{filepath}' no existe.")
                         continue
                     
-                    try:
-                        # Llamar al método send_file del handler
-                        print(f"\nIniciando transferencia de archivo...")
-                        handler.send_file(adapter, dest_mac, filepath)
-                        print(f"✓ Transferencia completada exitosamente.\n")
+                    # Iniciar transferencia de archivo (se ejecuta en segundo plano)
+                    # La lógica está en app_logic.py
+                    thread = threading.Thread(target=packet_handler.send_file, args=(adapter, dest_mac, filepath))
+                    thread.start()
+                
+                elif command == "discover":
+                    # Crear cabecera (sin payload)
+                    header = protocol.LinkChatHeader.pack(protocol.PacketType.DISCOVERY_REQUEST, 0)
                     
-                    except FileNotFoundError as e:
-                        print(f"✗ Error: {e}")
-                    except Exception as e:
-                        print(f"✗ Error al enviar archivo: {e}")
-                        import traceback
-                        traceback.print_exc()
+                    # Enviar trama de descubrimiento a broadcast
+                    print("-> Buscando otros usuarios en la red...")
+                    adapter.send_frame(config.BROADCAST_MAC, header)
                 
                 else:
-                    print(f"Comando no reconocido: '{command}'")
-                    print("Comandos disponibles: discover, broadcast, send, sendfile, exit")
+                    print(f"❌ Comando '{command}' no reconocido. Escribe 'help' para ayuda.")
             
             except KeyboardInterrupt:
-                # Manejar Ctrl+C
-                print("\n\nInterrumpido por el usuario.")
-                print("Cerrando Link-Chat...")
+                # Capturar Ctrl+C en el bucle de comandos para salir limpiamente
+                print("\nDetectado Ctrl+C. Saliendo...")
                 break
+            
+            except Exception as e:
+                # Capturar otros errores inesperados en el bucle
+                print(f"🔥 Error inesperado en el bucle de comandos: {e}")
+                print("   Continuando ejecución...")
     
     except IOError as e:
-        print(f"✗ Error de red: {e}")
-        print("Asegúrate de que hay interfaces de red disponibles.")
+        print(f"\n❌ ERROR DE RED: {e}")
+        print("   Asegúrate de que la interfaz de red está conectada y activa.")
     except PermissionError as e:
-        print(f"✗ Error de permisos: {e}")
-        print("Este programa requiere privilegios de superusuario (root).")
-        print("Ejecuta con: sudo python3 main.py")
+        print(f"\n❌ ERROR DE PERMISOS: {e}")
+        print("   Este programa debe ejecutarse con privilegios de root (sudo).")
     except Exception as e:
-        print(f"✗ Error inesperado: {e}")
+        print(f"\n🔥 ERROR INESPERADO: {e}")
+        print("   Ocurrió un error fatal. Revisa la traza para más detalles.")
         import traceback
         traceback.print_exc()
     
-    print("Link-Chat finalizado.")
+    print("\n✅ Link-Chat finalizado.")
 
 
 if __name__ == "__main__":
