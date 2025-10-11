@@ -281,36 +281,24 @@ class PacketHandler:
     def send_file(self, adapter, dest_mac: str, filepath: str):
         """
         Envía un archivo a través de la red en Capa 2.
-        
         El archivo se envía en múltiples paquetes:
         1. FILE_START: Metadatos del archivo (nombre y tamaño)
         2. FILE_DATA: Fragmentos de datos del archivo
         3. FILE_END: Señal de finalización
-        
-        Args:
-            adapter: Instancia de NetworkAdapter para enviar tramas
-            dest_mac (str): Dirección MAC destino en formato 'xx:xx:xx:xx:xx:xx'
-            filepath (str): Ruta del archivo a enviar
-        
-        Raises:
-            FileNotFoundError: Si el archivo no existe
-            IOError: Si hay problemas al leer el archivo
-        
-        Example:
-            >>> handler = PacketHandler()
-            >>> handler.send_file(adapter, 'ff:ff:ff:ff:ff:ff', '/path/to/file.txt')
         """
         # Verificar que el archivo existe
         if not os.path.exists(filepath):
-            raise FileNotFoundError(f"El archivo '{filepath}' no existe")
+            print(f"[ERROR] El archivo '{filepath}' no existe.")
+            return
         
-        # Obtener el nombre del archivo (sin la ruta completa)
         filename = os.path.basename(filepath)
         
-        # Obtener el tamaño total del archivo en bytes
-        file_size = os.path.getsize(filepath)
+        try:
+            file_size = os.path.getsize(filepath)
+        except Exception as e:
+            print(f"[ERROR] No se pudo obtener el tamaño de '{filepath}': {e}")
+            return
         
-        # Codificar el nombre del archivo a bytes UTF-8
         filename_bytes = filename.encode('utf-8')
         filename_len = len(filename_bytes)
         
@@ -341,53 +329,60 @@ class PacketHandler:
         # Enviar el paquete FILE_START
         adapter.send_frame(dest_mac, file_start_packet)
         
-        print(f"✓ FILE_START enviado: '{filename}' ({file_size} bytes) -> [{dest_mac}]")
+        print(f"✓ [FILE] FILE_START enviado: '{filename}' ({file_size} bytes) -> [{dest_mac}]")
         
-        # Abrir el archivo en modo lectura binaria
-        with open(filepath, 'rb') as file:
-            # Contador para seguimiento de progreso
-            bytes_sent = 0
-            chunk_count = 0
+        try:
+            with open(filepath, 'rb') as file:
+                # Contador para seguimiento de progreso
+                bytes_sent = 0
+                chunk_count = 0
+                
+                # Leer y enviar el archivo en fragmentos
+                while True:
+                    # Leer un fragmento del archivo del tamaño especificado en config.CHUNK_SIZE
+                    chunk = file.read(config.CHUNK_SIZE)
+                    
+                    # Si no hay más datos que leer, salir del bucle
+                    if not chunk:
+                        break
+                    
+                    # Incrementar contador de fragmentos
+                    chunk_count += 1
+                    bytes_sent += len(chunk)
+                    
+                    # Crear la cabecera Link-Chat para FILE_DATA
+                    file_data_header = protocol.LinkChatHeader.pack(
+                        protocol.PacketType.FILE_DATA,
+                        len(chunk)
+                    )
+                    
+                    # Construir el paquete completo: cabecera + fragmento de datos
+                    file_data_packet = file_data_header + chunk
+                    
+                    # Enviar el paquete FILE_DATA
+                    adapter.send_frame(dest_mac, file_data_packet)
+                    
+                    # Mostrar progreso
+                    progress = (bytes_sent / file_size) * 100 if file_size > 0 else 100
+                    print(f"  [FILE] Enviando... {bytes_sent}/{file_size} bytes ({progress:.1f}%) - Fragmento #{chunk_count}")
             
-            # Leer y enviar el archivo en fragmentos
-            while True:
-                # Leer un fragmento del archivo del tamaño especificado en config.CHUNK_SIZE
-                chunk = file.read(config.CHUNK_SIZE)
-                
-                # Si no hay más datos que leer, salir del bucle
-                if not chunk:
-                    break
-                
-                # Incrementar contador de fragmentos
-                chunk_count += 1
-                bytes_sent += len(chunk)
-                
-                # Crear la cabecera Link-Chat para FILE_DATA
-                file_data_header = protocol.LinkChatHeader.pack(
-                    protocol.PacketType.FILE_DATA,
-                    len(chunk)
-                )
-                
-                # Construir el paquete completo: cabecera + fragmento de datos
-                file_data_packet = file_data_header + chunk
-                
-                # Enviar el paquete FILE_DATA
-                adapter.send_frame(dest_mac, file_data_packet)
-                
-                # Mostrar progreso
-                progress = (bytes_sent / file_size) * 100 if file_size > 0 else 100
-                print(f"  Enviando... {bytes_sent}/{file_size} bytes ({progress:.1f}%) - Fragmento #{chunk_count}")
+            print(f"✓ [FILE] Archivo '{filename}' enviado completamente: {chunk_count} fragmentos, {bytes_sent} bytes")
+            
+            # Enviar paquete FILE_END para notificar fin de transferencia
+            # Este paquete no tiene payload, solo la cabecera
+            file_end_header = protocol.LinkChatHeader.pack(
+                protocol.PacketType.FILE_END,
+                0  # Longitud del payload = 0 (sin datos adicionales)
+            )
+            
+            # Enviar el paquete FILE_END (solo cabecera)
+            adapter.send_frame(dest_mac, file_end_header)
+            
+            print(f"✓ [FILE] FILE_END enviado. Transferencia de '{filename}' completada.")
         
-        print(f"✓ Archivo '{filename}' enviado completamente: {chunk_count} fragmentos, {bytes_sent} bytes")
-        
-        # Enviar paquete FILE_END para notificar fin de transferencia
-        # Este paquete no tiene payload, solo la cabecera
-        file_end_header = protocol.LinkChatHeader.pack(
-            protocol.PacketType.FILE_END,
-            0  # Longitud del payload = 0 (sin datos adicionales)
-        )
-        
-        # Enviar el paquete FILE_END (solo cabecera)
-        adapter.send_frame(dest_mac, file_end_header)
-        
-        print(f"✓ FILE_END enviado. Transferencia de '{filename}' completada.")
+        except PermissionError:
+            print(f"[ERROR] Permisos insuficientes para leer el archivo '{filepath}'.")
+        except OSError as e:
+            print(f"[ERROR] Error de sistema al leer/enviar '{filepath}': {e}")
+        except Exception as e:
+            print(f"[ERROR] Error inesperado durante el envío de archivo '{filepath}': {e}")
