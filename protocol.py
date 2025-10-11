@@ -18,6 +18,8 @@ class PacketType(Enum):
     - FILE_END: Fin de transferencia de archivo
     - FOLDER_START: Inicio de una carpeta (nombre y ruta relativa)
     - FOLDER_END: Fin de una carpeta
+    - FILE_ACK: Confirmación de recepción de fragmento
+    - FILE_NACK: Notificación de fragmento corrupto o perdido
     - DISCOVERY_REQUEST: Solicitud de descubrimiento broadcast (quién está en la red)
     - DISCOVERY_RESPONSE: Respuesta a solicitud de descubrimiento (identificación)
     """
@@ -25,10 +27,12 @@ class PacketType(Enum):
     FILE_START = 0x02
     FILE_DATA = 0x03
     FILE_END = 0x04
-    FOLDER_START = 0x07
-    FOLDER_END = 0x08
     DISCOVERY_REQUEST = 0x05
     DISCOVERY_RESPONSE = 0x06
+    FILE_ACK = 0x07
+    FILE_NACK = 0x08
+    FOLDER_START = 0x09
+    FOLDER_END = 0x0A
 
 
 class LinkChatHeader:
@@ -45,7 +49,7 @@ class LinkChatHeader:
     - H = unsigned short (2 bytes)
     
     -----------------------------
-    Nuevos tipos de paquete para carpetas:
+    Tipos de paquete para carpetas:
     
     FOLDER_START:
         Indica el inicio de una carpeta en la estructura a transferir.
