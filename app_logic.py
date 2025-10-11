@@ -1,13 +1,21 @@
 """
 Lógica de aplicación para Link-Chat
 Manejo de paquetes y procesamiento de mensajes
+Confirmaciones (ACK/NACK)
+Reensamblado de archivos en el receptor
 """
 
 import os
 import struct
-
+import time
+import zlib
+import threading
 import config
 import protocol
+# CONFIGURACION GLOBAL
+MAX_RETRIES = 3   #Maximo de reenvios por fragmento
+ACK_TIMEOUT = 2.0  #Tiempo de espera por ACK antes de reintentar
+
 
 
 class PacketHandler:
@@ -35,6 +43,9 @@ class PacketHandler:
         
         # Nombre de usuario para respuestas de descubrimiento
         self.username = None
+        # Control de ACK/NACK : mapa de fragmentos en espera
+        self.pending_acks = {} 
+        self.lock = threading.Lock()
     
     def set_adapter(self, adapter):
         """
@@ -141,6 +152,14 @@ class PacketHandler:
         elif packet_type_value == protocol.PacketType.FILE_DATA.value:
             # Fragmento de datos del archivo
             try:
+                # Estructura: [2B seq_num] + [4B checksum] + [datos]
+                seq_num, checksum = struct.unpack('!HI',content[:6])
+                chunk_data = content[6:]
+                #Verificar checksum
+                calc_checksum = zlib.crc32(chunk_data)
+                if calc_checksum != checksum:
+                    print(f"Checksum incorrecto en fragmento #{seq_num} de [{src_mac}] -> solicitando reenvio")
+                    self._send_ack(src_mac, seq_num, success=False)
                 # Buscar la transferencia activa para este remitente
                 if src_mac not in self.file_transfers:
                     print(f"[Advertencia] Recibido FILE_DATA de [{src_mac}] sin FILE_START previo. Ignorando.")
@@ -150,17 +169,18 @@ class PacketHandler:
                 file_object = transfer['file']
                 
                 # Escribir el fragmento de datos en el archivo
-                file_object.write(content)
+                file_object.write(chunk_data)
                 
                 # Actualizar contador de bytes recibidos
-                transfer['received'] += len(content)
+                transfer['received'] += len(chunk_data)
                 
                 # Mostrar progreso
                 progress = (transfer['received'] / transfer['size']) * 100 if transfer['size'] > 0 else 100
-                print(f"  Recibiendo... {transfer['received']}/{transfer['size']} bytes ({progress:.1f}%)")
+                print(f"  Recibido fragmento #{seq_num}({len(chunk_data)} bytes) [{progress:.1f}%]")
+                self._send_ack(src_mac, seq_num, success=True)
             
             except Exception as e:
-                print(f"[Error] Error al escribir datos de archivo de [{src_mac}]: {e}")
+                print(f"[Error] Error en recepcion de fragmento de [{src_mac}]: {e}")
         
         elif packet_type_value == protocol.PacketType.FILE_END.value:
             # Fin de transferencia de archivo
@@ -186,6 +206,12 @@ class PacketHandler:
             
             except Exception as e:
                 print(f"[Error] Error al finalizar recepción de archivo de [{src_mac}]: {e}")
+        
+        elif packet_type_value in (protocol.PacketType.FILE_ACK.value, protocol.PacketType.FILE_NACK.value):
+            seq_num = struct.unpack('!H',content)[0]
+            with self.lock:
+                if seq_num in self.pending_acks:
+                    self.pending_acks[seq_num] = (packet_type_value == protocol.PacketType.FILE_ACK.value)
         
         elif packet_type_value == protocol.PacketType.DISCOVERY_REQUEST.value:
             # Solicitud de descubrimiento recibida
@@ -246,8 +272,9 @@ class PacketHandler:
         
         El archivo se envía en múltiples paquetes:
         1. FILE_START: Metadatos del archivo (nombre y tamaño)
-        2. FILE_DATA: Fragmentos de datos del archivo
+        2. FILE_DATA: Fragmentos de datos del archivo con verificacion y reintento
         3. FILE_END: Señal de finalización
+        
         
         Args:
             adapter: Instancia de NetworkAdapter para enviar tramas
@@ -262,6 +289,7 @@ class PacketHandler:
             >>> handler = PacketHandler()
             >>> handler.send_file(adapter, 'ff:ff:ff:ff:ff:ff', '/path/to/file.txt')
         """
+        
         # Verificar que el archivo existe
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"El archivo '{filepath}' no existe")
@@ -309,7 +337,7 @@ class PacketHandler:
         with open(filepath, 'rb') as file:
             # Contador para seguimiento de progreso
             bytes_sent = 0
-            chunk_count = 0
+            seq = 0
             
             # Leer y enviar el archivo en fragmentos
             while True:
@@ -319,28 +347,19 @@ class PacketHandler:
                 # Si no hay más datos que leer, salir del bucle
                 if not chunk:
                     break
-                
-                # Incrementar contador de fragmentos
-                chunk_count += 1
+                seq += 1
+                checksum = zlib.crc32(chunk)
+                chunk_payload = struct.pack('!HI',seq, checksum) + chunk
+                header = protocol.LinkChatHeader.pack(protocol.PacketType.FILE_DATA,len(chunk_payload))
+                packet = header + chunk_payload
+                #Enviar con reintento
+                self._send_with_ack(adapter,dest_mac,packet,seq)
                 bytes_sent += len(chunk)
-                
-                # Crear la cabecera Link-Chat para FILE_DATA
-                file_data_header = protocol.LinkChatHeader.pack(
-                    protocol.PacketType.FILE_DATA,
-                    len(chunk)
-                )
-                
-                # Construir el paquete completo: cabecera + fragmento de datos
-                file_data_packet = file_data_header + chunk
-                
-                # Enviar el paquete FILE_DATA
-                adapter.send_frame(dest_mac, file_data_packet)
                 
                 # Mostrar progreso
                 progress = (bytes_sent / file_size) * 100 if file_size > 0 else 100
-                print(f"  Enviando... {bytes_sent}/{file_size} bytes ({progress:.1f}%) - Fragmento #{chunk_count}")
+                print(f"Fragmento #{seq} enviado ({len(chunk)} bytes) [{progress:.1f}%]")
         
-        print(f"✓ Archivo '{filename}' enviado completamente: {chunk_count} fragmentos, {bytes_sent} bytes")
         
         # Enviar paquete FILE_END para notificar fin de transferencia
         # Este paquete no tiene payload, solo la cabecera
@@ -353,3 +372,33 @@ class PacketHandler:
         adapter.send_frame(dest_mac, file_end_header)
         
         print(f"✓ FILE_END enviado. Transferencia de '{filename}' completada.")
+
+    def _send_ack(self, dest_mac: str ,seq_num: int, success=True):
+        #Envia un ACK o NACK segun el resultado de recepcion.
+        pkt_type = protocol.PacketType.FILE_ACK if success else protocol.PacketType.FILE_NACK
+        payload = struct.pack('!H',seq_num)
+        header = protocol.LinkChatHeader.pack(pkt_type,len(payload))
+        self.adapter.send_frame(dest_mac,header+payload)
+        print(f"Enviado {'ACK' if success else 'NACK'} para fragmento #{seq_num}")
+    
+    def _send_with_ack(self, adapter, dest_mac: str, packet: bytes, seq_num: int):
+        #Envia un paquete y espera ACK/NACK con reintento automatico
+        for attempt in range(MAX_RETRIES):
+            with self.lock:
+                self.pending_acks[seq_num] = None
+            adapter.send_frame(dest_mac,packet)
+            start_time = time.time()
+            while time.time() - start_time < ACK_TIMEOUT:
+                with self.lock:
+                    status = self.pending_acks.get(seq_num)
+                if status is not None:
+                    if status:
+                        print(f"ACK recibido para fragmento #{seq_num}")
+                        return
+                    else:
+                        print(f"NACK recibido , reintentando fragmento #{seq_num}")
+                        break
+                time.sleep(0.1)
+            print(f"Timeout esperando ACk de fragmento #{seq_num} (intento {attempt+1}/{MAX_RETRIES})")
+        print(f"No se pudo confirmar fragmento #{seq_num} tras {MAX_RETRIES} intentos")
+        

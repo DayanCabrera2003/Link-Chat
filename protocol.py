@@ -16,6 +16,8 @@ class PacketType(Enum):
     - FILE_START: Inicio de transferencia de archivo (contiene metadatos)
     - FILE_DATA: Fragmento de datos del archivo
     - FILE_END: Fin de transferencia de archivo
+    - FILE_ACK: Confirmacion de recepcion de fragmento
+    - FILE_NACK: Notificacion de fragmento corrupto o perdido
     - DISCOVERY_REQUEST: Solicitud de descubrimiento broadcast (quién está en la red)
     - DISCOVERY_RESPONSE: Respuesta a solicitud de descubrimiento (identificación)
     """
@@ -25,6 +27,8 @@ class PacketType(Enum):
     FILE_END = 0x04
     DISCOVERY_REQUEST = 0x05
     DISCOVERY_RESPONSE = 0x06
+    FILE_ACK = 0x07
+    FILE_NACK = 0x08
 
 
 class LinkChatHeader:
