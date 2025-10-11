@@ -8,9 +8,45 @@ import struct
 
 import config
 import protocol
-
+import threading
+import folder_utils
 
 class PacketHandler:
+    def send_folder(self, adapter, dest_mac: str, folder_path: str):
+        """
+        Envía una carpeta completa (estructura y archivos) a través de la red.
+        Utiliza los eventos generados por walk_folder para enviar FOLDER_START, archivos y FOLDER_END.
+        El proceso se lanza en un hilo para no bloquear la interfaz.
+        
+        Args:
+            adapter: Instancia de NetworkAdapter para enviar tramas
+            dest_mac (str): Dirección MAC destino
+            folder_path (str): Ruta de la carpeta a enviar
+        """        
+
+        def _send():
+            for event, relpath in folder_utils.walk_folder(folder_path):
+                if event == 'FOLDER_START':
+                    # Payload: 2 bytes longitud + ruta relativa UTF-8
+                    rel_bytes = relpath.encode('utf-8')
+                    payload = struct.pack('!H', len(rel_bytes)) + rel_bytes
+                    header = protocol.LinkChatHeader.pack(protocol.PacketType.FOLDER_START, len(payload))
+                    adapter.send_frame(dest_mac, header + payload)
+                    print(f"→ FOLDER_START: {relpath}")
+                elif event == 'FILE':
+                    abs_file = os.path.join(folder_path, relpath) if not os.path.isabs(relpath) else relpath
+                    # Si relpath es relativo, construir ruta absoluta desde folder_path
+                    abs_file = os.path.abspath(abs_file)
+                    self.send_file(adapter, dest_mac, abs_file)
+                elif event == 'FOLDER_END':
+                    # FOLDER_END no lleva payload
+                    header = protocol.LinkChatHeader.pack(protocol.PacketType.FOLDER_END, 0)
+                    adapter.send_frame(dest_mac, header)
+                    print(f"→ FOLDER_END: {relpath}")
+
+        thread = threading.Thread(target=_send, daemon=True)
+        thread.start()
+        print(f"[INFO] Enviando carpeta '{folder_path}' a {dest_mac} en segundo plano...")
     """
     Manejador de paquetes para Link-Chat.
     
