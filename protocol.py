@@ -16,6 +16,8 @@ class PacketType(Enum):
     - FILE_START: Inicio de transferencia de archivo (contiene metadatos)
     - FILE_DATA: Fragmento de datos del archivo
     - FILE_END: Fin de transferencia de archivo
+    - FOLDER_START: Inicio de una carpeta (nombre y ruta relativa)
+    - FOLDER_END: Fin de una carpeta
     - DISCOVERY_REQUEST: Solicitud de descubrimiento broadcast (quién está en la red)
     - DISCOVERY_RESPONSE: Respuesta a solicitud de descubrimiento (identificación)
     """
@@ -23,6 +25,8 @@ class PacketType(Enum):
     FILE_START = 0x02
     FILE_DATA = 0x03
     FILE_END = 0x04
+    FOLDER_START = 0x07
+    FOLDER_END = 0x08
     DISCOVERY_REQUEST = 0x05
     DISCOVERY_RESPONSE = 0x06
 
@@ -39,6 +43,23 @@ class LinkChatHeader:
     - ! = Network byte order (big-endian)
     - B = unsigned char (1 byte)
     - H = unsigned short (2 bytes)
+    
+    -----------------------------
+    Nuevos tipos de paquete para carpetas:
+    
+    FOLDER_START:
+        Indica el inicio de una carpeta en la estructura a transferir.
+        Payload:
+            - 2 bytes: Longitud de la ruta relativa (!H = unsigned short)
+            - N bytes: Ruta relativa de la carpeta en UTF-8 (ej: 'fotos/vacaciones')
+        Ejemplo de uso: Para crear la carpeta 'fotos/vacaciones' en el receptor.
+    
+    FOLDER_END:
+        Indica el fin de la carpeta actual.
+        Payload:
+            - 0 bytes (no contiene datos)
+        Ejemplo de uso: Señala que se ha terminado de enviar el contenido de la carpeta actual.
+    -----------------------------
     """
     
     # Tamaño total de la cabecera en bytes
