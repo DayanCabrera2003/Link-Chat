@@ -87,3 +87,5 @@ venv.bak/
 # Project specific
 *.pcap
 *.log
+CV
+tareas.txt
