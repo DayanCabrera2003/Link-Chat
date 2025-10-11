@@ -71,6 +71,8 @@ class PacketHandler:
         
         # Nombre de usuario para respuestas de descubrimiento
         self.username = None
+        self._folder_stack = []  # Pila de rutas absolutas
+        self._folder_base = None  # Carpeta base de recepción
     
     def set_adapter(self, adapter):
         """
