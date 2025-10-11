@@ -257,17 +257,29 @@ def main():
                     if len(parts) != 3:
                         print("❌ Uso: file <MAC_destino> <ruta_archivo>")
                         continue
-                    
                     dest_mac = parts[1]
                     filepath = parts[2]
-                    
                     if not os.path.exists(filepath):
                         print(f"❌ Error: El archivo '{filepath}' no existe.")
                         continue
-                    
                     # Iniciar transferencia de archivo (se ejecuta en segundo plano)
-                    # La lógica está en app_logic.py
                     thread = threading.Thread(target=packet_handler.send_file, args=(adapter, dest_mac, filepath))
+                    thread.start()
+
+                elif command == "folder":
+                    if len(parts) != 3:
+                        print("❌ Uso: folder <MAC_destino> <ruta_carpeta>")
+                        continue
+                    dest_mac = parts[1]
+                    folder_path = parts[2]
+                    if not os.path.exists(folder_path):
+                        print(f"❌ Error: La ruta '{folder_path}' no existe.")
+                        continue
+                    if not os.path.isdir(folder_path):
+                        print(f"❌ Error: '{folder_path}' no es una carpeta.")
+                        continue
+                    # Iniciar transferencia de carpeta (en segundo plano)
+                    thread = threading.Thread(target=packet_handler.send_folder, args=(adapter, dest_mac, folder_path))
                     thread.start()
                 
                 elif command == "discover":

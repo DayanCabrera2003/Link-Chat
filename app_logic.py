@@ -8,7 +8,8 @@ import struct
 
 import config
 import protocol
-
+import threading
+import folder_utils
 
 class PacketHandler:
     """
@@ -35,6 +36,8 @@ class PacketHandler:
         
         # Nombre de usuario para respuestas de descubrimiento
         self.username = None
+        self._folder_stack = []  # Pila de rutas absolutas
+        self._folder_base = None  # Carpeta base de recepción
     
     def set_adapter(self, adapter):
         """
@@ -117,9 +120,14 @@ class PacketHandler:
                 # Extraer el tamaño total del archivo (últimos 8 bytes)
                 file_size = struct.unpack('!Q', content[2 + filename_len:2 + filename_len + 8])[0]
                 
-                # Crear un nombre único para el archivo recibido (evitar sobrescribir)
-                # Agregar prefijo con la MAC del remitente
-                safe_filename = f"received_{filename}"
+                # MODIFICACIÓN: Si estamos dentro de una carpeta, guardar ahí
+                if self._folder_stack:
+                    # Guardar en la carpeta actual de la pila
+                    current_folder = self._folder_stack[-1]
+                    safe_filename = os.path.join(current_folder, filename)
+                else:
+                    # Comportamiento original: prefijo "received_"
+                    safe_filename = f"received_{filename}"
                 
                 # Abrir archivo para escritura binaria
                 file_object = open(safe_filename, 'wb')
@@ -239,40 +247,71 @@ class PacketHandler:
                 print(f"[Advertencia] DISCOVERY_RESPONSE corrupto recibido de [{src_mac}]")
             except Exception as e:
                 print(f"[Error] Error al procesar DISCOVERY_RESPONSE de [{src_mac}]: {e}")
+        
+        elif packet_type_value == protocol.PacketType.FOLDER_START.value:
+            # Inicio de una carpeta
+            try:
+                # Extraer longitud y ruta relativa
+                path_len = struct.unpack('!H', content[:2])[0]
+                rel_path = content[2:2 + path_len].decode('utf-8')
+                
+                # Si es la primera carpeta, establecer base
+                if not self._folder_stack:
+                    self._folder_base = f"received_{os.path.basename(rel_path)}" if rel_path else "received_folder"
+                    current_path = self._folder_base
+                else:
+                    # Construir ruta desde la base
+                    current_path = os.path.join(self._folder_base, rel_path) if rel_path else self._folder_base
+                
+                # Crear carpeta si no existe
+                if not os.path.exists(current_path):
+                    os.makedirs(current_path, exist_ok=True)
+                    print(f"📁 Creando carpeta: {current_path}")
+                
+                # Añadir a la pila
+                self._folder_stack.append(current_path)
+                
+            except Exception as e:
+                print(f"[Error] Error al procesar FOLDER_START de [{src_mac}]: {e}")
+        
+        elif packet_type_value == protocol.PacketType.FOLDER_END.value:
+            # Fin de carpeta
+            try:
+                if self._folder_stack:
+                    closed_folder = self._folder_stack.pop()
+                    print(f"✅ Carpeta completada: {closed_folder}")
+                    
+                    # Si se cerró la carpeta raíz, limpiar estado
+                    if not self._folder_stack:
+                        print(f"\n🎉 Recepción de carpeta completada: {self._folder_base}\n")
+                        self._folder_base = None
+                else:
+                    print(f"[Advertencia] FOLDER_END sin FOLDER_START de [{src_mac}]")
+            
+            except Exception as e:
+                print(f"[Error] Error al procesar FOLDER_END de [{src_mac}]: {e}")
     
     def send_file(self, adapter, dest_mac: str, filepath: str):
         """
         Envía un archivo a través de la red en Capa 2.
-        
         El archivo se envía en múltiples paquetes:
         1. FILE_START: Metadatos del archivo (nombre y tamaño)
         2. FILE_DATA: Fragmentos de datos del archivo
         3. FILE_END: Señal de finalización
-        
-        Args:
-            adapter: Instancia de NetworkAdapter para enviar tramas
-            dest_mac (str): Dirección MAC destino en formato 'xx:xx:xx:xx:xx:xx'
-            filepath (str): Ruta del archivo a enviar
-        
-        Raises:
-            FileNotFoundError: Si el archivo no existe
-            IOError: Si hay problemas al leer el archivo
-        
-        Example:
-            >>> handler = PacketHandler()
-            >>> handler.send_file(adapter, 'ff:ff:ff:ff:ff:ff', '/path/to/file.txt')
         """
         # Verificar que el archivo existe
         if not os.path.exists(filepath):
-            raise FileNotFoundError(f"El archivo '{filepath}' no existe")
+            print(f"[ERROR] El archivo '{filepath}' no existe.")
+            return
         
-        # Obtener el nombre del archivo (sin la ruta completa)
         filename = os.path.basename(filepath)
         
-        # Obtener el tamaño total del archivo en bytes
-        file_size = os.path.getsize(filepath)
+        try:
+            file_size = os.path.getsize(filepath)
+        except Exception as e:
+            print(f"[ERROR] No se pudo obtener el tamaño de '{filepath}': {e}")
+            return
         
-        # Codificar el nombre del archivo a bytes UTF-8
         filename_bytes = filename.encode('utf-8')
         filename_len = len(filename_bytes)
         
@@ -303,53 +342,172 @@ class PacketHandler:
         # Enviar el paquete FILE_START
         adapter.send_frame(dest_mac, file_start_packet)
         
-        print(f"✓ FILE_START enviado: '{filename}' ({file_size} bytes) -> [{dest_mac}]")
+        print(f"✓ [FILE] FILE_START enviado: '{filename}' ({file_size} bytes) -> [{dest_mac}]")
         
-        # Abrir el archivo en modo lectura binaria
-        with open(filepath, 'rb') as file:
-            # Contador para seguimiento de progreso
-            bytes_sent = 0
-            chunk_count = 0
+        try:
+            with open(filepath, 'rb') as file:
+                # Contador para seguimiento de progreso
+                bytes_sent = 0
+                chunk_count = 0
+                
+                # Leer y enviar el archivo en fragmentos
+                while True:
+                    # Leer un fragmento del archivo del tamaño especificado en config.CHUNK_SIZE
+                    chunk = file.read(config.CHUNK_SIZE)
+                    
+                    # Si no hay más datos que leer, salir del bucle
+                    if not chunk:
+                        break
+                    
+                    # Incrementar contador de fragmentos
+                    chunk_count += 1
+                    bytes_sent += len(chunk)
+                    
+                    # Crear la cabecera Link-Chat para FILE_DATA
+                    file_data_header = protocol.LinkChatHeader.pack(
+                        protocol.PacketType.FILE_DATA,
+                        len(chunk)
+                    )
+                    
+                    # Construir el paquete completo: cabecera + fragmento de datos
+                    file_data_packet = file_data_header + chunk
+                    
+                    # Enviar el paquete FILE_DATA
+                    adapter.send_frame(dest_mac, file_data_packet)
+                    
+                    # Mostrar progreso
+                    progress = (bytes_sent / file_size) * 100 if file_size > 0 else 100
+                    print(f"  [FILE] Enviando... {bytes_sent}/{file_size} bytes ({progress:.1f}%) - Fragmento #{chunk_count}")
             
-            # Leer y enviar el archivo en fragmentos
-            while True:
-                # Leer un fragmento del archivo del tamaño especificado en config.CHUNK_SIZE
-                chunk = file.read(config.CHUNK_SIZE)
-                
-                # Si no hay más datos que leer, salir del bucle
-                if not chunk:
-                    break
-                
-                # Incrementar contador de fragmentos
-                chunk_count += 1
-                bytes_sent += len(chunk)
-                
-                # Crear la cabecera Link-Chat para FILE_DATA
-                file_data_header = protocol.LinkChatHeader.pack(
-                    protocol.PacketType.FILE_DATA,
-                    len(chunk)
-                )
-                
-                # Construir el paquete completo: cabecera + fragmento de datos
-                file_data_packet = file_data_header + chunk
-                
-                # Enviar el paquete FILE_DATA
-                adapter.send_frame(dest_mac, file_data_packet)
-                
-                # Mostrar progreso
-                progress = (bytes_sent / file_size) * 100 if file_size > 0 else 100
-                print(f"  Enviando... {bytes_sent}/{file_size} bytes ({progress:.1f}%) - Fragmento #{chunk_count}")
+            print(f"✓ [FILE] Archivo '{filename}' enviado completamente: {chunk_count} fragmentos, {bytes_sent} bytes")
+            
+            # Enviar paquete FILE_END para notificar fin de transferencia
+            # Este paquete no tiene payload, solo la cabecera
+            file_end_header = protocol.LinkChatHeader.pack(
+                protocol.PacketType.FILE_END,
+                0  # Longitud del payload = 0 (sin datos adicionales)
+            )
+            
+            # Enviar el paquete FILE_END (solo cabecera)
+            adapter.send_frame(dest_mac, file_end_header)
+            
+            print(f"✓ [FILE] FILE_END enviado. Transferencia de '{filename}' completada.")
         
-        print(f"✓ Archivo '{filename}' enviado completamente: {chunk_count} fragmentos, {bytes_sent} bytes")
+        except PermissionError:
+            print(f"[ERROR] Permisos insuficientes para leer el archivo '{filepath}'.")
+        except OSError as e:
+            print(f"[ERROR] Error de sistema al leer/enviar '{filepath}': {e}")
+        except Exception as e:
+            print(f"[ERROR] Error inesperado durante el envío de archivo '{filepath}': {e}")
+    
+    def _send_file_with_path(self, adapter, dest_mac: str, filepath: str, filename_for_header: str):
+        """
+        Versión interna de send_file que permite especificar el nombre en el header.
+        Usado para enviar archivos dentro de carpetas preservando la ruta relativa.
         
-        # Enviar paquete FILE_END para notificar fin de transferencia
-        # Este paquete no tiene payload, solo la cabecera
-        file_end_header = protocol.LinkChatHeader.pack(
-            protocol.PacketType.FILE_END,
-            0  # Longitud del payload = 0 (sin datos adicionales)
-        )
+        Args:
+            adapter: Instancia de NetworkAdapter
+            dest_mac (str): Dirección MAC destino
+            filepath (str): Ruta absoluta del archivo a enviar
+            filename_for_header (str): Nombre/ruta relativa a usar en el paquete FILE_START
+        """
+        if not os.path.exists(filepath):
+            print(f"[ERROR] El archivo '{filepath}' no existe.")
+            return
         
-        # Enviar el paquete FILE_END (solo cabecera)
-        adapter.send_frame(dest_mac, file_end_header)
+        try:
+            file_size = os.path.getsize(filepath)
+        except Exception as e:
+            print(f"[ERROR] No se pudo obtener el tamaño de '{filepath}': {e}")
+            return
         
-        print(f"✓ FILE_END enviado. Transferencia de '{filename}' completada.")
+        # Usar filename_for_header en lugar de basename
+        filename_bytes = filename_for_header.encode('utf-8')
+        filename_len = len(filename_bytes)
+        
+        # Construir el payload para FILE_START
+        filename_len_bytes = struct.pack('!H', filename_len)
+        file_size_bytes = struct.pack('!Q', file_size)
+        file_start_payload = filename_len_bytes + filename_bytes + file_size_bytes
+        
+        # Crear y enviar cabecera FILE_START
+        file_start_header = protocol.LinkChatHeader.pack(protocol.PacketType.FILE_START, len(file_start_payload))
+        file_start_packet = file_start_header + file_start_payload
+        adapter.send_frame(dest_mac, file_start_packet)
+        
+        print(f"  → FILE_START: {filename_for_header} ({file_size} bytes)")
+        
+        # Enviar datos del archivo
+        try:
+            with open(filepath, 'rb') as file:
+                bytes_sent = 0
+                chunk_count = 0
+                
+                while True:
+                    chunk = file.read(config.CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    
+                    chunk_count += 1
+                    bytes_sent += len(chunk)
+                    
+                    file_data_header = protocol.LinkChatHeader.pack(protocol.PacketType.FILE_DATA, len(chunk))
+                    file_data_packet = file_data_header + chunk
+                    adapter.send_frame(dest_mac, file_data_packet)
+                    
+                    progress = (bytes_sent / file_size) * 100 if file_size > 0 else 100
+                    print(f"    Enviando... {bytes_sent}/{file_size} bytes ({progress:.1f}%)")
+            
+            # FILE_END
+            file_end_header = protocol.LinkChatHeader.pack(protocol.PacketType.FILE_END, 0)
+            adapter.send_frame(dest_mac, file_end_header)
+            print(f"  → FILE_END: {filename_for_header}")
+            
+        except Exception as e:
+            print(f"[ERROR] Error al enviar '{filepath}': {e}")
+    
+    def send_folder(self, adapter, dest_mac: str, folder_path: str):
+        """
+        Envía una carpeta completa (estructura y archivos) a través de la red.
+        
+        Flujo de envío de carpetas:
+        1. Se recorre recursivamente la carpeta origen usando walk_folder (ver folder_utils.py).
+        2. Por cada evento:
+           - FOLDER_START: Se envía un paquete FOLDER_START con la ruta relativa de la carpeta.
+           - FILE: Se envía el archivo preservando la ruta relativa.
+           - FOLDER_END: Se envía un paquete FOLDER_END para indicar el cierre de la carpeta actual.
+        3. Todo el proceso se ejecuta en un hilo para no bloquear la CLI.
+        
+        Args:
+            adapter: Instancia de NetworkAdapter para enviar tramas
+            dest_mac (str): Dirección MAC destino
+            folder_path (str): Ruta de la carpeta a enviar
+        """
+        
+        def _send():
+            base_path = os.path.abspath(folder_path)
+            
+            for event, relpath in folder_utils.walk_folder(folder_path):
+                if event == 'FOLDER_START':
+                    # Payload: 2 bytes longitud + ruta relativa UTF-8
+                    rel_bytes = relpath.encode('utf-8')
+                    payload = struct.pack('!H', len(rel_bytes)) + rel_bytes
+                    header = protocol.LinkChatHeader.pack(protocol.PacketType.FOLDER_START, len(payload))
+                    adapter.send_frame(dest_mac, header + payload)
+                    print(f"→ FOLDER_START: {relpath if relpath else '(raíz)'}")
+                    
+                elif event == 'FILE':
+                    # Construir ruta absoluta del archivo
+                    abs_file = os.path.join(base_path, relpath)
+                    
+                    # IMPORTANTE: Enviar con ruta relativa preservada
+                    self._send_file_with_path(adapter, dest_mac, abs_file, relpath)
+                    
+                elif event == 'FOLDER_END':
+                    header = protocol.LinkChatHeader.pack(protocol.PacketType.FOLDER_END, 0)
+                    adapter.send_frame(dest_mac, header)
+                    print(f"→ FOLDER_END: {relpath if relpath else '(raíz)'}")
+
+        thread = threading.Thread(target=_send, daemon=True)
+        thread.start()
+        print(f"[INFO] Enviando carpeta '{folder_path}' a {dest_mac} en segundo plano...")
