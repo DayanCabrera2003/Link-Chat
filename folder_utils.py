@@ -1,6 +1,17 @@
 """
 Utilidades para serialización y recorrido de carpetas en Link-Chat
-Permite recorrer una estructura de carpetas y archivos para su envío ordenado.
+
+Flujo de serialización de carpetas para envío:
+--------------------------------------------------
+1. walk_folder(folder_path) recorre recursivamente la carpeta origen.
+2. Por cada carpeta encontrada:
+    - Genera un evento ('FOLDER_START', ruta_relativa)
+    - Para cada archivo, genera ('FILE', ruta_relativa)
+    - Para cada subcarpeta, recursivamente repite el proceso.
+    - Al terminar la carpeta, genera ('FOLDER_END', ruta_relativa)
+3. El generador produce los eventos en el orden correcto para reconstrucción.
+
+Esto permite que el emisor y receptor mantengan la jerarquía de carpetas y archivos.
 """
 
 import os
