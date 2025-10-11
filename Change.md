@@ -1,169 +1,221 @@
+# 📘 Actualización de Fiabilidad en Transferencia de Archivos – Link-Chat
 
+## 🧩 Descripción General
 
-# 🧩 Link-Chat — Mejoras en Fiabilidad de Transferencia de Archivos
+Esta actualización mejora el sistema de envío de archivos del proyecto **Link-Chat**, añadiendo **fiabilidad a nivel de fragmento**.  
+El nuevo mecanismo implementa **ACK/NACK**, **checksum CRC32**, y **retransmisión automática** en caso de errores o pérdida de paquetes.  
 
-## 📄 Descripción General
-
-Esta actualización mejora la fiabilidad de la transferencia de archivos en Link-Chat al añadir confirmaciones (ACKs), verificación de integridad mediante checksum, y reintentos automáticos en caso de error o pérdida de fragmentos.
-
-Todo esto se implementa usando solo la librería estándar de Python, sin dependencias externas.
-
----
-
-## ⚙️ Objetivos de la mejora
-
-* 📬 Confirmar que cada fragmento (FILE_DATA) fue recibido correctamente por el destino.
-* 🔁 Reenviar fragmentos automáticamente si no se recibe confirmación (ACK) en un tiempo determinado.
-* 🧮 Verificar integridad de cada fragmento mediante checksum SHA-256.
-* 🧱 Mantener compatibilidad completa con la estructura actual del protocolo (Protocol.py).
-* 🧰 Usar solo librerías estándar (sin requests, hashlib y struct son suficientes).
+Todo se desarrolló **usando solo librerías estándar de Python**, sin dependencias externas, y se integró en los archivos existentes:  
+`protocol.py` y `app_logic.py`.
 
 ---
 
-## 🧠 Cambios principales
+## 🧠 Objetivos Técnicos
 
-### 1. Nuevo tipo de paquete
+| Objetivo | Descripción |
+|-----------|-------------|
+| ✅ Confirmaciones | Confirmar la recepción exitosa de cada fragmento con `ACK`. |
+| ⚠️ Reenvío automático | Reenviar fragmentos dañados o perdidos con `NACK` o `timeout`. |
+| 🔒 Integridad | Verificar cada bloque con checksum CRC32 (`zlib.crc32`). |
+| 🧩 Compatibilidad | Mantener estructura existente del proyecto (sin romper `Main.py`). |
+| 💬 Transparencia | Mostrar mensajes detallados en consola sobre progreso y errores. |
 
-Se añadió un nuevo tipo de paquete en Protocol.py dentro de la clase PacketType:
+---
 
+## 📂 Archivos Modificados
+
+| Archivo | Descripción |
+|----------|--------------|
+| `protocol.py` | Se añadieron nuevos tipos de paquete (`FILE_ACK` y `FILE_NACK`). |
+| `app_logic.py` | Se implementaron el control de reintentos, confirmaciones, y validación CRC32. |
+
+---
+
+## ⚙️ Detalles de Implementación
+
+### 1. Nuevos tipos de paquete (`protocol.py`)
+
+Se agregaron dos nuevos tipos para la comunicación de estado de fragmentos:
+
+```python
 class PacketType(Enum):
-    ...
-    ACK = 0x07  # Confirmación de recepción de fragmento
-📘 Propósito: Indicar al emisor que un fragmento (FILE_DATA) fue recibido correctamente.
+    FILE_ACK = 0x07     # Confirmación de fragmento recibido correctamente
+    FILE_NACK = 0x08    # Aviso de fragmento dañado o perdido
+```
+
+Esto permite distinguir si un fragmento fue aceptado (`ACK`) o rechazado (`NACK`).
 
 ---
 
-### 2. Cálculo de checksum
+### 2. Estructura de un fragmento (`FILE_DATA`)
 
-Cada fragmento enviado ahora incluye un checksum SHA-256 calculado con hashlib.
+Cada fragmento de archivo se envía con la siguiente estructura binaria:
 
-Formato del payload de FILE_DATA modificado:
+| Campo | Tamaño | Descripción |
+|-------|---------|-------------|
+| `seq_num` | 2 bytes | Número de secuencia del fragmento |
+| `checksum` | 4 bytes | Checksum CRC32 del contenido |
+| `data` | Variable | Datos reales del fragmento |
 
-[32 bytes] checksum SHA-256
-[N bytes]  datos del fragmento
-📗 Ejemplo:
+Ejemplo de empaquetado:
 
-import hashlib
-
-checksum = hashlib.sha256(chunk).digest()
-file_data_payload = checksum + chunk
-Esto permite que el receptor valide la integridad del fragmento antes de confirmarlo.
+```python
+seq_num, checksum = struct.unpack('!HI', content[:6])
+chunk_data = content[6:]
+```
 
 ---
 
-### 3. Confirmación (ACK)
+### 3. Cálculo y validación del checksum (CRC32)
 
-Después de recibir y validar un fragmento (FILE_DATA), el receptor envía un paquete ACK con esta estructura:
+Antes de enviar cada fragmento:
 
-[4 bytes] Número de secuencia del fragmento confirmado (unsigned int)
-📘 Ejemplo de envío:
+```python
+checksum = zlib.crc32(chunk)
+chunk_payload = struct.pack('!HI', seq, checksum) + chunk
+```
 
-ack_payload = struct.pack('!I', seq_num)
-ack_header = protocol.LinkChatHeader.pack(protocol.PacketType.ACK, len(ack_payload))
-adapter.send_frame(src_mac, ack_header + ack_payload)
+En el destino, el receptor recalcula el CRC32 y lo compara:
+
+```python
+calc_checksum = zlib.crc32(chunk_data)
+if calc_checksum != checksum:
+    self._send_ack(src_mac, seq_num, success=False)
+```
+
+Si hay diferencia → se envía un `FILE_NACK`.
+
 ---
 
-### 4. Retransmisión automática
+### 4. Confirmación por fragmento (ACK/NACK)
 
-El emisor mantiene un diccionario de fragmentos enviados y espera confirmación (ACK) para cada uno.
-Si no llega el ACK dentro de config.ACK_TIMEOUT (por ejemplo, 1.5 s), el fragmento se reenvía automáticamente hasta un máximo de config.MAX_RETRIES.
+Cada fragmento correctamente recibido genera un **ACK**, mientras que uno dañado genera un **NACK**.
 
-📘 Variables añadidas en config.py:
+```python
+def _send_ack(self, dest_mac, seq_num, success=True):
+    pkt_type = protocol.PacketType.FILE_ACK if success else protocol.PacketType.FILE_NACK
+    payload = struct.pack('!H', seq_num)
+    header = protocol.LinkChatHeader.pack(pkt_type, len(payload))
+    self.adapter.send_frame(dest_mac, header + payload)
+    print(f"↩️ Enviado {'ACK' if success else 'NACK'} para fragmento #{seq_num}.")
+```
 
-ACK_TIMEOUT = 1.5       # Tiempo máximo de espera por ACK (segundos)
-MAX_RETRIES = 3         # Número máximo de reintentos por fragmento
 ---
 
-### 5. Recepción con validación
+### 5. Retransmisión automática
 
-Cuando el receptor recibe un FILE_DATA:
+Si un fragmento no recibe `ACK` o recibe `NACK`, el emisor lo reenvía automáticamente.
 
-1. Extrae el checksum (32 bytes) y los datos reales.
-2. Calcula el checksum del contenido.
-3. Si coincide:
+```python
+for attempt in range(MAX_RETRIES):
+    with self.lock:
+        self.pending_acks[seq_num] = None
 
-   * Guarda los datos en el archivo.
-   * Envía ACK con el número de fragmento correspondiente.
-4. Si no coincide:
+    adapter.send_frame(dest_mac, packet)
 
-   * Ignora el fragmento (no envía ACK, el emisor lo reintentará).
+    start_time = time.time()
+    while time.time() - start_time < ACK_TIMEOUT:
+        with self.lock:
+            status = self.pending_acks.get(seq_num)
+        if status is not None:
+            if status:
+                print(f"✅ ACK recibido para fragmento #{seq_num}")
+                return
+            else:
+                print(f"❌ NACK recibido, reintentando fragmento #{seq_num}")
+                break
+        time.sleep(0.1)
+```
 
-📗 Ejemplo:
+Si tras 3 intentos no se confirma, se aborta la transferencia de ese fragmento:
 
-recv_checksum = content[:32]
-data = content[32:]
-calc_checksum = hashlib.sha256(data).digest()
+```python
+print(f"🚨 No se pudo confirmar fragmento #{seq_num} tras {MAX_RETRIES} intentos.")
+```
 
-if recv_checksum == calc_checksum:
-    # OK → escribir en archivo y enviar ACK
-else:
-    print("[Advertencia] Fragmento corrupto, se solicitará reenvío automático.")
 ---
 
-### 6. Lógica de envío robusta
+### 6. Control concurrente seguro con `threading.Lock()`
 
-El método send_file() en Lógica de aplicación ahora:
+El diccionario `pending_acks` guarda los fragmentos pendientes de confirmación.  
+Para evitar condiciones de carrera entre hilos emisores y receptores, se usa un **bloqueo (`Lock`)**:
 
-* Asigna un número de secuencia (seq_num) a cada fragmento.
-* Espera su ACK antes de continuar.
-* Si no llega el ACK → reenvía hasta MAX_RETRIES.
-* Si falla todos los intentos → cancela transferencia y muestra error.
+```python
+self.lock = threading.Lock()
+```
 
-📘 Ejemplo simplificado:
+y cada acceso se protege con `with self.lock:`.
 
-Ronal, [11/10/25 2:57]
-for seq_num, chunk in enumerate(chunks):
-    send_fragment(seq_num)
-    if not wait_for_ack(seq_num, timeout=config.ACK_TIMEOUT):
-        retries += 1
-        if retries > config.MAX_RETRIES:
-            print(f"[Error] Fragmento {seq_num} no confirmado tras {config.MAX_RETRIES} intentos.")
-            break
 ---
 
-## 📊 Flujo de transferencia (resumen)
+### 7. Indicadores visuales en consola
 
+Durante el envío y recepción se muestran estados detallados:
+
+**En el emisor:**
+```
+🚀 Enviando 'archivo.zip' (1.2 MB) a [AA:BB:CC:DD:EE:FF]...
+📤 Fragmento #3 enviado (4096 bytes) [27.1%]
+✅ ACK recibido para fragmento #3
+⚠️ Timeout esperando ACK de fragmento #5 (intento 2/3)
+```
+
+**En el receptor:**
+```
+📥 Iniciando recepción de 'archivo.zip' (1.2 MB)
+✅ Recibido fragmento #3 (4096 bytes) [27.1%]
+↩️ Enviado ACK para fragmento #3
+⚠️ Checksum incorrecto en fragmento #4 → solicitando reenvío
+```
+
+---
+
+### 8. Flujo general de transferencia (actualizado)
+
+```
 1️⃣ Emisor → FILE_START
-2️⃣ Emisor → FILE_DATA (con checksum + seq_num)
-3️⃣ Receptor → Calcula checksum y envía ACK(seq_num)
-4️⃣ Emisor → Espera ACK
-     ├─ Si lo recibe: envía siguiente fragmento
-     └─ Si no: reintenta hasta MAX_RETRIES
+2️⃣ Emisor → FILE_DATA (#1)
+3️⃣ Receptor → Verifica CRC32 → envía ACK o NACK
+4️⃣ Emisor → Espera ACK → reintenta si es necesario
 5️⃣ Emisor → FILE_END
-6️⃣ Receptor → Cierra archivo, confirma recepción completa
----
-
-## 🧾 Mensajes de consola agregados
-
-Durante la transferencia, verás mensajes más detallados:
-
-* En el emisor:
-
- 
-  📤 Fragmento #3 enviado (4096 bytes) [OK]
-  🔁 Reintentando fragmento #3 (intento 2/3)...
-  ✅ Fragmento #3 confirmado correctamente.
-  
-* En el receptor:
-
- 
-  📥 Fragmento #3 recibido correctamente (checksum válido)
-  ⚠️ Fragmento #3 corrupto. Se solicitará reenvío.
-  
----
-
-## 🧰 Librerías utilizadas
-
-Solo módulos estándar de Python:
-
-| Módulo      | Uso                                         |
-| ----------- | ------------------------------------------- |
-| struct    | Empaquetar cabeceras y números de secuencia |
-| hashlib   | Cálculo de checksum SHA-256                 |
-| time      | Control de espera y temporización de ACK    |
-| threading | Sincronización de envío/recepción           |
-| os        | Acceso a archivos                           |
-| enum      | Tipos de paquete                            |
+6️⃣ Receptor → Cierra archivo y confirma finalización
+```
 
 ---
 
+## 🧰 Parámetros configurables
+
+| Parámetro | Valor | Descripción |
+|------------|--------|-------------|
+| `MAX_RETRIES` | 3 | Número máximo de reenvíos por fragmento |
+| `ACK_TIMEOUT` | 2.0 s | Tiempo máximo para esperar confirmación |
+| `config.CHUNK_SIZE` | Configurable | Tamaño de cada fragmento leído del archivo |
+
+---
+
+## 📦 Librerías estándar utilizadas
+
+| Módulo | Propósito |
+|---------|------------|
+| `struct` | Empaquetado de datos binarios |
+| `zlib` | Cálculo de checksum CRC32 |
+| `os` | Gestión de archivos |
+| `time` | Control de tiempos de espera |
+| `threading` | Sincronización de ACK/NACK |
+| `enum` | Definición de tipos de paquete |
+
+---
+
+## 🧩 Ventajas de esta implementación
+
+- 🔁 **Fiabilidad garantizada** sin depender de TCP ni capas superiores.  
+- 🧱 **Totalmente compatible** con Docker, red física o Wi-Fi.  
+- ⚙️ **Modular y reutilizable**, con mínimo impacto en la arquitectura existente.  
+- 📡 **Transparente al usuario final**, mostrando estado en tiempo real.  
+- 🧠 **Simple de mantener**, sin dependencias externas ni librerías adicionales.
+
+---
+
+## 🚀 Resultado
+
+Con esta mejora, Link-Chat ahora soporta **transferencias de archivos confiables a nivel de Capa 2**, con detección automática de errores y retransmisión controlada, manteniendo la simplicidad y el rendimiento original del sistema.
